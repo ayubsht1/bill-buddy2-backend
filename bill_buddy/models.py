@@ -21,17 +21,10 @@ class CustomUserManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
-    GENDER_CHOICES = (
-        ('male', 'Male'),
-        ('female', 'Female'),
-        ('other', 'Other'),
-    )
-
     email = models.EmailField(unique=True)
-    username = models.CharField(max_length=150, unique=True)  # <-- Add this
-    first_name = models.CharField(max_length=150, blank=True)
-    last_name = models.CharField(max_length=150, blank=True)
-    gender = models.CharField(max_length=6, choices=GENDER_CHOICES, null=True, blank=True)
+    username = models.CharField(max_length=150, unique=True)
+    first_name = models.CharField(max_length=150, blank=True, null=True)
+    last_name = models.CharField(max_length=150, blank=True, null=True)
     groups = models.ManyToManyField(
         Group,
         related_name='customuser_set',
@@ -54,7 +47,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     objects = CustomUserManager()
 
     USERNAME_FIELD = 'email'  # Still login via email
-    REQUIRED_FIELDS = ['username', 'first_name', 'last_name']  # <-- include username here
+    REQUIRED_FIELDS = ['username', 'first_name', 'last_name']
 
     def __str__(self):
         return self.email

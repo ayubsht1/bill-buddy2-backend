@@ -118,11 +118,11 @@ class LoginView(APIView):
                 "refresh": str(refresh),
                 "access": str(refresh.access_token),
                 "user": {
+                    "id": user.id,
                     "username": user.username,
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "gender": user.gender,
                 }
             }
         )
@@ -158,8 +158,8 @@ class GoogleLoginView(APIView):
                     user = User.objects.create(
                         email=email,
                         username=safe_username,
-                        first_name="",  # optionally derive from another field if available
-                        last_name="",
+                        first_name=None,  # optionally derive from another field if available
+                        last_name=None,
                         is_active=True,  # auto-activate Google users
                     )
                     created = True
@@ -189,7 +189,6 @@ class GoogleLoginView(APIView):
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "gender": user.gender,
                 },
             },
         )

@@ -26,3 +26,11 @@ class ExpenseShare(models.Model):
     def __str__(self):
         return f"{self.user.email} owes {self.amount} for {self.expense.description}"
 
+class ExpenseComment(models.Model):
+    expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="comments")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.email} on {self.expense.description}"

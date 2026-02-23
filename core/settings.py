@@ -150,5 +150,8 @@ CORS_ALLOWED_ORIGINS_STR = config('CORS_ALLOWED_ORIGINS', default='')
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_STR.split(',') if origin.strip()]
 
 # If CORS_ALLOWED_ORIGINS set, disable all origins allow
-if CORS_ALLOWED_ORIGINS:
-    CORS_ALLOW_ALL_ORIGINS = False
+# if CORS_ALLOWED_ORIGINS:
+#     CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOW_CREDENTIALS = True
+FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
