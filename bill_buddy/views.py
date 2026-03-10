@@ -280,32 +280,6 @@ class ResendVerificationEmailView(APIView):
         )
 
 
-class ResendPasswordResetEmailView(APIView):
-    def post(self, request):
-        email = request.data.get('email')
-
-        if not email:
-            return custom_response(
-                success=False,
-                message="Email is required",
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            user = CustomUser.objects.get(email=email)
-        except CustomUser.DoesNotExist:
-            return custom_response(
-                success=False,
-                message="User with this email does not exist",
-                status_code=status.HTTP_404_NOT_FOUND
-            )
-
-        send_password_reset_email(user, request)
-        return custom_response(
-            success=True,
-            message="Password reset email resent. Please check your inbox the link will expire in 10 minutes."
-        )
-
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 

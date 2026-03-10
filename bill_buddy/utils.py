@@ -45,9 +45,11 @@ def send_password_reset_email(user, request):
     # Save new token
     PasswordResetToken.objects.create(user=user, token=token)
 
-    reset_url = request.build_absolute_uri(
-        reverse('password-reset-confirm') + f'?token={token}'
-    )
+    # reset_url = request.build_absolute_uri(
+    #     reverse('password-reset-confirm') + f'?token={token}'
+    # )
+    reset_url = f"{settings.FRONTEND_URL}/auth/reset-password?token={token}"
+
 
     subject = 'Reset Your Password - Bill Buddy'
     message = f"""
