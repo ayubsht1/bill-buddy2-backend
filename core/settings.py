@@ -31,6 +31,8 @@ INSTALLED_APPS = [
 
     # Local apps
     'bill_buddy',
+    'groups',
+    
 ]
 
 MIDDLEWARE = [
@@ -78,14 +80,14 @@ DATABASES = {
 
 # Custom user model
 AUTH_USER_MODEL = 'bill_buddy.CustomUser'
-AUTHENTICATION_BACKENDS = ['bill_buddy.backends.EmailBackend']
+AUTHENTICATION_BACKENDS = ['bill_buddy.backends.EmailBackend','django.contrib.auth.backends.AllowAllUsersModelBackend']
 
 
 # JWT Authentication settings
 SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=5),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": True,
     "ALGORITHM": "HS256",
@@ -148,5 +150,8 @@ CORS_ALLOWED_ORIGINS_STR = config('CORS_ALLOWED_ORIGINS', default='')
 CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_STR.split(',') if origin.strip()]
 
 # If CORS_ALLOWED_ORIGINS set, disable all origins allow
-if CORS_ALLOWED_ORIGINS:
-    CORS_ALLOW_ALL_ORIGINS = False
+# if CORS_ALLOWED_ORIGINS:
+#     CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOW_CREDENTIALS = True
+FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")

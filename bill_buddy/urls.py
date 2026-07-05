@@ -1,15 +1,14 @@
 from django.urls import path
 from .views import (RegisterView, LoginView, EmailVerifyView, PasswordResetRequestView, PasswordResetConfirmView,
-ResendVerificationEmailView, ResendPasswordResetEmailView, LogoutView)
+ResendVerificationEmailView, LogoutView, GoogleLoginView)
 
 urlpatterns = [
-    path('api/register/', RegisterView.as_view(), name='register'),
-    path('api/login/', LoginView.as_view(), name='login'),
-    path('api/email-verify/', EmailVerifyView.as_view(), name='email-verify'),
-    path('api/password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
-    path('api/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
-    path('api/resend-verification/', ResendVerificationEmailView.as_view(), name='resend-verification'),
-    path('api/resend-password-reset/', ResendPasswordResetEmailView.as_view(), name='resend-password-reset'),
-    path('api/logout/', LogoutView.as_view(), name='logout'),
-
+    path('register/', RegisterView.as_view(), name='register'),
+    path('login/', LoginView.as_view(), name='login'),
+    path('email-verify/', EmailVerifyView.as_view(), name='email-verify'),
+    path('password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
+    path('reset-password/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('resend-verification/', ResendVerificationEmailView.as_view(), name='resend-verification'),
+    path('logout/', LogoutView.as_view(), name='logout'),
+    path("social-login/", GoogleLoginView.as_view(), name="social-login"),
 ]

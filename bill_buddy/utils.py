@@ -45,9 +45,11 @@ def send_password_reset_email(user, request):
     # Save new token
     PasswordResetToken.objects.create(user=user, token=token)
 
-    reset_url = request.build_absolute_uri(
-        reverse('password-reset-confirm') + f'?token={token}'
-    )
+    # reset_url = request.build_absolute_uri(
+    #     reverse('password-reset-confirm') + f'?token={token}'
+    # )
+    reset_url = f"{settings.FRONTEND_URL}/auth/reset-password?token={token}"
+
 
     subject = 'Reset Your Password - Bill Buddy'
     message = f"""
@@ -63,6 +65,13 @@ def send_password_reset_email(user, request):
     Bill Buddy Team
     """
     send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
+
+
+def send_settlement_reminder(user_email, group_name, amount_due):
+    subject = f"Reminder: Settlement due in group {group_name}"
+    message = f"Hi,\n\nYou have a pending settlement of {amount_due} in the group '{group_name}'. Please settle it at your earliest convenience.\n\nThanks!"
+    send_mail(subject, message, None, [user_email])
+
 
 
 
