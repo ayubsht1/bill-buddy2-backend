@@ -80,7 +80,7 @@ DATABASES = {
 
 # Custom user model
 AUTH_USER_MODEL = 'bill_buddy.CustomUser'
-AUTHENTICATION_BACKENDS = ['bill_buddy.backends.EmailBackend']
+AUTHENTICATION_BACKENDS = ['bill_buddy.backends.EmailBackend','django.contrib.auth.backends.AllowAllUsersModelBackend']
 
 
 # JWT Authentication settings

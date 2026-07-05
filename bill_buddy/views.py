@@ -106,7 +106,10 @@ class LoginView(APIView):
             return custom_response(
                 success=False,
                 message="Account not activated. Please verify your email.",
-                status_code=status.HTTP_401_UNAUTHORIZED
+                 status_code=status.HTTP_401_UNAUTHORIZED,
+                data={
+                "is_active": user.is_active
+            }
             )
 
         refresh = RefreshToken.for_user(user)
@@ -124,7 +127,7 @@ class LoginView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                 }
-            }
+            },
         )
 
 def generate_safe_username(email):
