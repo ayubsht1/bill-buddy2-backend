@@ -1,5 +1,5 @@
 from rest_framework.views import APIView
-from rest_framework.response import Response
+# from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth import authenticate
 from .models import CustomUser,PasswordResetToken, EmailVerificationToken
@@ -13,6 +13,8 @@ from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 from django.db import IntegrityError, transaction
 User = get_user_model()
+from django.http import HttpResponseRedirect
+from django.conf import settings
 
 class RegisterView(APIView):
     def post(self, request):
@@ -78,8 +80,7 @@ class EmailVerifyView(APIView):
         verification_token.used = True
         verification_token.save()
 
-        return custom_response(success=True, message="Email verified successfully. You can now log in.")
-
+        return HttpResponseRedirect(f"{settings.FRONTEND_URL}/auth/emailVerified")
 
 class LoginView(APIView):
     def post(self, request):
