@@ -1,5 +1,4 @@
 from django.db import models
-from groups.models import Group
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin, Permission
 from django.conf import settings
 from django.utils import timezone
@@ -26,7 +25,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     first_name = models.CharField(max_length=150, blank=True, null=True)
     last_name = models.CharField(max_length=150, blank=True, null=True)
     groups = models.ManyToManyField(
-        Group,
+        'groups.Group',
         related_name='customuser_set',
         blank=True,
         help_text='The groups this user belongs to.',

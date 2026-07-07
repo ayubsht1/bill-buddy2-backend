@@ -1,9 +1,10 @@
 from django.urls import path
-from django.http import HttpResponse
-
-def settlement_text(request):
-    return HttpResponse("settlement", content_type="text/plain")
+from .views import RecordSettlementView, SettlementDetailView
 
 urlpatterns = [
-    path("settlement/", settlement_text),
+    # GET (history) or POST (new payment)
+    path('group/<int:group_id>/', RecordSettlementView.as_view(), name='record-settlement'),
+    
+    # DELETE a settlement record
+    path('<int:settlement_id>/', SettlementDetailView.as_view(), name='settlement-detail'),
 ]

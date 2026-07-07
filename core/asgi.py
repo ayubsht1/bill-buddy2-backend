@@ -1,16 +1,18 @@
-"""
-ASGI config for core project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/5.2/howto/deployment/asgi/
-"""
-
 import os
-
 from django.core.asgi import get_asgi_application
+from channels.routing import ProtocolTypeRouter, URLRouter
+from channels.auth import AuthMiddlewareStack
+# import chat.routing # Uncomment this once you create your chat routing file
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
-
-application = get_asgi_application()
+application = ProtocolTypeRouter({
+    # Handles normal HTTP requests (Django REST Framework)
+    "http": get_asgi_application(),
+    
+    # Handles WebSocket connections (Next.js real-time chat)
+    "websocket": AuthMiddlewareStack(
+        URLRouter(
+            [] # Pass an empty list here so Channels doesn't crash
+        )
+    ),
+})
