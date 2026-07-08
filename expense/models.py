@@ -4,19 +4,23 @@ from groups.models import Group
 
 
 class Expense(models.Model):
-    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="expenses")
+    class SplitType(models.TextChoices):
+        EQUAL = 'EQUAL', 'Equal'
+        EXACT = 'EXACT', 'Exact'
+        PERCENT = 'PERCENT', 'Percent'
+
+    group = models.ForeignKey('groups.Group', on_delete=models.CASCADE, related_name='expenses')
     description = models.CharField(max_length=255)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    paid_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="expenses_paid"
-    )
-    date = models.DateField()
-    created_at = models.DateTimeField(auto_now_add=True)
+    amount = models.DecimalField(decimal_places=2, max_digits=10)
+    paid_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='expenses_paid')
+    date = models.DateField(auto_now_add=True)
+    
+    # 🚀 Add these historical configuration fields
+    split_type = models.CharField(max_length=10, choices=SplitType.choices, default=SplitType.EQUAL)
+    split_data = models.JSONField(default=list, blank=True)
 
     def __str__(self):
-        return f"{self.description} - {self.amount}"
+        return f"{self.description} - ${self.amount}"
     
 class ExpenseShare(models.Model):
     expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="shares")
