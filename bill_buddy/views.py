@@ -311,3 +311,41 @@ class LogoutView(APIView):
                 message="Invalid or expired refresh token.",
                 status_code=status.HTTP_400_BAD_REQUEST
             )
+
+class TokenRefreshView(APIView):
+    """
+    Takes a valid refresh type JSON web token and returns a fresh, 
+    short-lived access token to continue hitting authenticated routes.
+    """
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+        
+        if not refresh_token:
+            return custom_response(
+                success=False,
+                message="Refresh token is required.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Load and validate the provided refresh token token string
+            refresh = RefreshToken(refresh_token)
+            
+            # Generate a clean new access token rotation payload
+            data = {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh)  # Included if token rotation settings are active in settings.py
+            }
+            
+            return custom_response(
+                success=True,
+                message="Token refreshed successfully.",
+                data=data
+            )
+
+        except TokenError:
+            return custom_response(
+                success=False,
+                message="Token is invalid or has expired.",
+                status_code=status.HTTP_401_UNAUTHORIZED
+            )

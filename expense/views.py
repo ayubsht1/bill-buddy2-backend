@@ -42,6 +42,7 @@ class CreateExpenseView(APIView):
 
         try:
             with transaction.atomic():
+                # Force save with the URL's contextual group, ignoring body context overrides
                 expense = serializer.save(paid_by=request.user, group=group)
 
                 if split_type == 'EQUAL':
@@ -65,6 +66,7 @@ class CreateExpenseView(APIView):
 
                         ExpenseShare.objects.create(expense=expense, user_id=user_id, amount=user_amount)
                     
+                    # Moved safely INSIDE the transactional context block:
                     if total_split_sum != total_amount:
                         raise ValueError(f"Total split amounts ({total_split_sum}) must equal expense total ({total_amount}).")
 
@@ -75,32 +77,46 @@ class CreateExpenseView(APIView):
                         percentage = Decimal(str(item.get('percentage', 0)))
                         total_percentage += percentage
 
-                        # Calculate individual share amount based on percentage
                         share_amount = (total_amount * (percentage / Decimal('100.00'))).quantize(Decimal('0.01'))
                         ExpenseShare.objects.create(expense=expense, user_id=user_id, amount=share_amount)
 
+                    # Moved safely INSIDE the transactional context block:
                     if total_percentage != Decimal('100.00'):
                         raise ValueError(f"Total percentages ({total_percentage}%) must equal exactly 100%.")
 
-            # Real-time WebSocket broadcast to groups app chat channel layer
+            # 🚀 WRITE TO DB: Save the system log text directly to your database history tracking logs
+            system_msg = f"📊 {request.user.username} added an expense: '{expense.description}' for ${expense.amount}."
+            from groups.models import GroupMessage
+            GroupMessage.objects.create(group=group, sender=None, message=system_msg)
+
+            # ⚡ Real-time WebSocket broadcast to groups app chat channel layer
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"chat_{group.id}",  
                 {
                     "type": "chat_message",
                     "username": "SYSTEM",
-                    "message": f"📊 {request.user.username} added an expense: '{expense.description}' for ${expense.amount}."
+                    "message": system_msg
                 }
             )
 
+            expense.refresh_from_db()
+
             return custom_response(
-                success=True, message="Expense added and split successfully.", data=ExpenseCreateSerializer(expense).data, status_code=status.HTTP_201_CREATED
+                success=True, 
+                message="Expense added and split successfully.", 
+                data=ExpenseCreateSerializer(expense).data, 
+                status_code=status.HTTP_201_CREATED
             )
 
         except ValueError as e:
             return custom_response(success=False, message=str(e), status_code=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return custom_response(success=False, message="An error occurred while creating splits.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return custom_response(
+                success=False, 
+                message=f"Internal Server Error: {str(e)}", # 🚀 Change this to see the real error!
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class GroupBalancesView(APIView):
@@ -169,22 +185,17 @@ class ExpenseDetailView(APIView):
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # 🛠️ SAFE FALLBACK CHECK
-        split_type = request.data.get('split_type')
-        if not split_type:
-            shares = expense.shares.all()
-            first_share = shares.first()
-            split_type = 'EXACT' if shares.exists() and any(s.amount != first_share.amount for s in shares) else 'EQUAL'
-
-        split_data = request.data.get('split_data', [])
+        # 🚀 FIX 1: Clean, fast fallbacks pulling straight from the database model columns
+        split_type = request.data.get('split_type', expense.split_type)
+        split_data = request.data.get('split_data', expense.split_data)
         total_amount = Decimal(str(request.data.get('amount', expense.amount)))
 
         try:
             with transaction.atomic():
-                # 1. Update core expense details
+                # 1. Update core expense details (saves split_type and split_data if passed)
                 updated_expense = serializer.save()
 
-                # 2. Re-calculate splits only if financial parameters change
+                # 🚀 FIX 2: Always clear and recalculate if amount, split type, OR split distribution changes
                 if 'amount' in request.data or 'split_type' in request.data or 'split_data' in request.data:
                     expense.shares.all().delete()
 
@@ -213,18 +224,30 @@ class ExpenseDetailView(APIView):
 
                     elif split_type == 'PERCENT':
                         total_percentage = Decimal('0.00')
+                        calculated_total_shares = Decimal('0.00')
+                        shares_to_create = []
+
                         for item in split_data:
                             user_id = item.get('user_id')
                             percentage = Decimal(str(item.get('percentage', 0)))
                             total_percentage += percentage
 
                             share_amount = (total_amount * (percentage / Decimal('100.00'))).quantize(Decimal('0.01'))
-                            ExpenseShare.objects.create(expense=updated_expense, user_id=user_id, amount=share_amount)
+                            calculated_total_shares += share_amount
+                            shares_to_create.append({'user_id': user_id, 'amount': share_amount})
 
                         if total_percentage != Decimal('100.00'):
                             raise ValueError(f"Total percentages ({total_percentage}%) must equal exactly 100%.")
 
-            # ⚡ REAL-TIME Update
+                        # Penny rounding problem resolution
+                        rounding_difference = total_amount - calculated_total_shares
+                        if rounding_difference != Decimal('0.00') and shares_to_create:
+                            shares_to_create[-1]['amount'] += rounding_difference
+
+                        for share in shares_to_create:
+                            ExpenseShare.objects.create(expense=updated_expense, user_id=share['user_id'], amount=share['amount'])
+
+            # ⚡ REAL-TIME Update Broadcast
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"chat_{expense.group.id}",  
@@ -235,6 +258,8 @@ class ExpenseDetailView(APIView):
                 }
             )
 
+            updated_expense.refresh_from_db() 
+
             return custom_response(
                 success=True,
                 message="Expense updated and splits recalculated successfully.",
@@ -244,7 +269,11 @@ class ExpenseDetailView(APIView):
         except ValueError as e:
             return custom_response(success=False, message=str(e), status_code=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return custom_response(success=False, message="An error occurred while updating.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return custom_response(
+                success=False, 
+                message=f"Internal Server Error: {str(e)}", 
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     def put(self, request, expense_id):
         return self.patch(request, expense_id)
