@@ -2,11 +2,14 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.shortcuts import get_object_or_404
+from django.db import transaction
+from decimal import Decimal
 
 from groups.models import Group
 from bill_buddy.response import custom_response
 from .models import Settlement
 from .serializers import SettlementSerializer
+from expense.models import Expense, ExpenseShare
 
 # Real-time WebSocket support
 from channels.layers import get_channel_layer
@@ -33,9 +36,10 @@ class RecordSettlementView(APIView):
         )
 
     def post(self, request, group_id):
-        """Records a new peer-to-peer settlement payment."""
+        """Records a new peer-to-peer settlement payment securely."""
         group = get_object_or_404(Group, id=group_id)
 
+        # Ensure the person making the API request is part of the group
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False, message="You are not a member of this group.", status_code=status.HTTP_403_FORBIDDEN
@@ -47,13 +51,56 @@ class RecordSettlementView(APIView):
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
 
+        # 👥 1. RESOLVE PAYER: Get paid_by from JSON data, or fall back to request.user
+        paid_by_user = serializer.validated_data.get('paid_by', request.user)
+        if not group.members.filter(id=paid_by_user.id).exists():
+            return custom_response(
+                success=False, message="The payer is not a member of this group.", status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 👥 2. RESOLVE RECIPIENT
         paid_to_user = serializer.validated_data['paid_to']
         if not group.members.filter(id=paid_to_user.id).exists():
             return custom_response(
                 success=False, message="The recipient is not a member of this group.", status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        settlement = serializer.save(paid_by=request.user, group=group)
+        amount_to_settle = Decimal(str(serializer.validated_data['amount']))
+
+        # 🔒 3. BOUNDARY SAFETY CHECK: Calculate current net balance of the target payer
+        user_balance = Decimal('0.00')
+        for exp in Expense.objects.filter(group=group, paid_by=paid_by_user):
+            user_balance += exp.amount
+        for share in ExpenseShare.objects.filter(expense__group=group, user=paid_by_user):
+            user_balance -= share.amount
+        for s in Settlement.objects.filter(group=group):
+            if s.paid_by == paid_by_user:
+                user_balance += s.amount
+            if s.paid_to == paid_by_user:
+                user_balance -= s.amount
+
+        # Debt is the inverse of a negative balance
+        current_debt = -user_balance if user_balance < 0 else Decimal('0.00')
+
+        if amount_to_settle > current_debt:
+            return custom_response(
+                success=False, 
+                message=f"Validation error: Cannot settle ${amount_to_settle} because {paid_by_user.username} only owes ${current_debt.quantize(Decimal('0.01'))}.", 
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 💾 4. COMMIT EXECUTION
+        with transaction.atomic():
+            settlement = serializer.save(paid_by=paid_by_user, group=group)
+
+            # Build contextual system log text based on proxy logging
+            if paid_by_user != request.user:
+                system_msg = f"✅ {request.user.username} recorded a settlement: {paid_by_user.username} paid ${settlement.amount} to {paid_to_user.username}."
+            else:
+                system_msg = f"✅ {request.user.username} settled ${settlement.amount} with {paid_to_user.username}."
+                
+            from groups.models import GroupMessage
+            GroupMessage.objects.create(group=group, sender=None, message=system_msg)
 
         # ⚡ REAL-TIME: Broadcast to WebSockets
         channel_layer = get_channel_layer()
@@ -62,7 +109,7 @@ class RecordSettlementView(APIView):
             {
                 "type": "chat_message",
                 "username": "SYSTEM",
-                "message": f"✅ {request.user.username} settled ${settlement.amount} with {paid_to_user.username}."
+                "message": system_msg
             }
         )
 
@@ -90,11 +137,16 @@ class SettlementDetailView(APIView):
             )
 
         group_id = settlement.group.id
-        payer_name = settlement.paid_by.username
         recipient_name = settlement.paid_to.username
         amount = settlement.amount
 
-        settlement.delete()
+        with transaction.atomic():
+            settlement.delete()
+            
+            # Log the rollback to the database chat history log too
+            delete_msg = f"⚠️ {request.user.username} deleted the settlement record of ${amount} to {recipient_name}."
+            from groups.models import GroupMessage
+            GroupMessage.objects.create(group_id=group_id, sender=None, message=delete_msg)
 
         # ⚡ REAL-TIME: Notify room channel layer that a payment was undone
         channel_layer = get_channel_layer()
@@ -103,7 +155,7 @@ class SettlementDetailView(APIView):
             {
                 "type": "chat_message",
                 "username": "SYSTEM",
-                "message": f"⚠️ {request.user.username} deleted the settlement record of ${amount} to {recipient_name}."
+                "message": delete_msg
             }
         )
 

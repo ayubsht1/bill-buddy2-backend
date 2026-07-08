@@ -10,8 +10,17 @@ class ExpenseShareSerializer(serializers.ModelSerializer):
         fields = ['user_id', 'email', 'amount']
 
 class ExpenseCreateSerializer(serializers.ModelSerializer):
-    split_data = serializers.JSONField(write_only=True, required=False)
-    split_type = serializers.ChoiceField(choices=['EQUAL', 'EXACT', 'PERCENT'], write_only=True, default='EQUAL')
+    # This explicit definition allows DRF to handle raw array validation cleanly before reaching the view
+    split_data = serializers.ListField(
+        child=serializers.DictField(), 
+        write_only=True, 
+        required=False
+    )
+    split_type = serializers.ChoiceField(
+        choices=['EQUAL', 'EXACT', 'PERCENT'], 
+        write_only=True, 
+        default='EQUAL'
+    )
     shares = ExpenseShareSerializer(many=True, read_only=True)
 
     class Meta:
