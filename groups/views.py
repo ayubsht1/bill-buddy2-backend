@@ -80,15 +80,24 @@ class GroupDetailView(APIView):
             )
 
         group_name = group.name
+        warn_msg = f"🚨 This group has been deleted by its owner ({request.user.username})."
 
-        # ⚡ Real-Time: Warn active socket subscribers right before teardown
+        # ⚡ Real-Time: Warn active socket subscribers right before teardown using our unified layout contract
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f"chat_{group.id}",
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": f"🚨 This group has been deleted by its owner ({request.user.username})."
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": warn_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 
@@ -133,14 +142,22 @@ class JoinGroupView(APIView):
         join_msg = f"🎉 {request.user.username} joined the group!"
         GroupMessage.objects.create(group=group, sender=None, message=join_msg)
 
-        # ⚡ REAL-TIME: Notify active websocket chatters that someone new stepped in!
+        # ⚡ REAL-TIME: Fixed to structure properly with consumer channel architectures
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f"chat_{group.id}",
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": join_msg
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": join_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 
@@ -155,62 +172,96 @@ class GroupChatView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, group_id):
-        """Fetch the scrollback/chat history log for a group."""
+        """Fetch the scrollback history log, excluding hidden deleted items or customizing view."""
         group = get_object_or_404(Group, id=group_id)
-        
         if not group.members.filter(id=request.user.id).exists():
-            return custom_response(
-                success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN
-            )
+            return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
             
-        # Get last 100 messages
         messages = GroupMessage.objects.filter(group=group).order_by('-timestamp')[:100]
         serializer = GroupMessageSerializer(reversed(messages), many=True)
-        
-        return custom_response(
-            success=True,
-            message="Chat history retrieved.",
-            data=serializer.data
-        )
+        return custom_response(success=True, message="Chat history retrieved.", data=serializer.data)
 
     def post(self, request, group_id):
-        """🚀 ADDED: Standard REST fallback endpoint to send a message to the group chat."""
+        """Handles standard messaging, along with Reply and Forward mechanics."""
         group = get_object_or_404(Group, id=group_id)
-        
         if not group.members.filter(id=request.user.id).exists():
-            return custom_response(
-                success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN
-            )
+            return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
             
         message_text = request.data.get('message', '').strip()
-        if not message_text:
-            return custom_response(
-                success=False, message="Message content cannot be empty.", status_code=status.HTTP_400_BAD_REQUEST
-            )
-            
-        # 1. Store to Database
+        reply_id = request.data.get('reply_to_id')
+        forward_msg_id = request.data.get('forward_message_id')
+
+        # 1. Handle Forward Mechanic Option
+        if forward_msg_id:
+            orig_msg = get_object_or_404(GroupMessage, id=forward_msg_id)
+            # Verify user has access to read the source group message
+            if not orig_msg.group.members.filter(id=request.user.id).exists():
+                return custom_response(success=False, message="Cannot forward a message you cannot access.", status_code=status.HTTP_403_FORBIDDEN)
+            message_text = orig_msg.message  # Copy content across
+            is_forwarded = True
+        else:
+            is_forwarded = False
+
+        if not message_text and not forward_msg_id:
+            return custom_response(success=False, message="Message content cannot be empty.", status_code=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Handle Reply verification link
+        reply_to_obj = None
+        if reply_id:
+            reply_to_obj = GroupMessage.objects.filter(id=reply_id, group=group).first()
+
+        # Build entry
         chat_msg = GroupMessage.objects.create(
             group=group,
             sender=request.user,
-            message=message_text
+            message=message_text,
+            reply_to=reply_to_obj,
+            is_forwarded=is_forwarded
         )
         
-        # 2. Sync to active Websocket Clients out there live
+        # Real-time WebSocket broadcast trigger configuration
+        self._broadcast_to_sockets(group.id, "chat_message", GroupMessageSerializer(chat_msg).data)
+        
+        return custom_response(success=True, message="Sent.", data=GroupMessageSerializer(chat_msg).data, status_code=status.HTTP_201_CREATED)
+
+    def patch(self, request, group_id):
+        """📌 PIN OR 🗑️ SOFT-DELETE a targeted message inside a chat room."""
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
+
+        message_id = request.data.get('message_id')
+        action = request.data.get('action') # 'pin', 'unpin', or 'delete'
+        
+        msg = get_object_or_404(GroupMessage, id=message_id, group=group)
+
+        if action in ['pin', 'unpin']:
+            msg.is_pinned = (action == 'pin')
+            msg.save()
+        elif action == 'delete':
+            # Security Rule: Only the sender or group creator can delete a text message
+            if msg.sender != request.user and group.creator != request.user:
+                return custom_response(success=False, message="Unauthorized action.", status_code=status.HTTP_403_FORBIDDEN)
+            msg.is_deleted = True
+            msg.save()
+        else:
+            return custom_response(success=False, message="Invalid action query parameter.", status_code=status.HTTP_400_BAD_REQUEST)
+
+        # Notify active clients about the state update via WebSockets
+        serialized_data = GroupMessageSerializer(msg).data
+        self._broadcast_to_sockets(group.id, "message_update", serialized_data)
+
+        return custom_response(success=True, message=f"Message action '{action}' executed successfully.", data=serialized_data)
+
+    def _broadcast_to_sockets(self, group_id, event_type, data):
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
-            f"chat_{group.id}",
+            f"chat_{group_id}",
             {
-                "type": "chat_message",
-                "username": request.user.username,
-                "message": message_text
+                "type": "room_event",
+                "event_type": event_type,
+                "data": data
             }
-        )
-        
-        return custom_response(
-            success=True,
-            message="Message sent successfully.",
-            data=GroupMessageSerializer(chat_msg).data,
-            status_code=status.HTTP_201_CREATED
         )
     
 class AddGroupMemberView(APIView):
@@ -266,9 +317,17 @@ class AddGroupMemberView(APIView):
         async_to_sync(channel_layer.group_send)(
             f"chat_{group.id}",
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": add_msg
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,  # System message placeholder
+                    "sender_username": "SYSTEM",
+                    "message": add_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 
@@ -336,9 +395,17 @@ class RemoveGroupMemberView(APIView):
         async_to_sync(channel_layer.group_send)(
             f"chat_{group.id}",
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": broadcast_message
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": broadcast_message,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 

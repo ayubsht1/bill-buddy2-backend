@@ -36,24 +36,27 @@ class Group(models.Model):
 
 class GroupMessage(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="chat_messages")
-    # If user is NULL, it's a "SYSTEM" automated update message
     sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="sent_messages")
     message = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
+
+    # --- 🚀 NEW CHAT FEATURE FIELDS ---
+    # Reply: Self-referencing link to the original target message
+    reply_to = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name="replies")
+    
+    # Forward & Pin flags
+    is_forwarded = models.BooleanField(default=False)
+    is_pinned = models.BooleanField(default=False)
+    
+    # Soft Delete: Keeps database intact but hides the text string copy from users
+    is_deleted = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['timestamp']
 
     def __str__(self):
+        if self.is_deleted:
+            return f"[{self.group.name}] Message deleted"
         sender_name = self.sender.username if self.sender else "SYSTEM"
         return f"[{self.group.name}] {sender_name}: {self.message[:30]}"
     
-
-# class Membership(models.Model):
-#     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-#     group = models.ForeignKey(Group, on_delete=models.CASCADE)
-#     role = models.CharField(max_length=20, choices=[('admin', 'Admin'), ('member', 'Member')])
-#     joined_at = models.DateTimeField(auto_now_add=True)
-
-#     class Meta:
-#         unique_together = ('user', 'group')
