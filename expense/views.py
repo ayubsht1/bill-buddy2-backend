@@ -8,7 +8,7 @@ from decimal import Decimal
 # Absolute imports targeting your clean folder structure
 from .models import Expense, ExpenseShare
 from settlement.models import Settlement  # Points to your settlement app model
-from groups.models import Group
+from groups.models import Group, GroupMessage # Imported GroupMessage for logs!
 from bill_buddy.response import custom_response  # Clean custom response path!
 from .serializers import ExpenseCreateSerializer
 from .utils import simplify_debts
@@ -86,17 +86,24 @@ class CreateExpenseView(APIView):
 
             # 🚀 WRITE TO DB: Save the system log text directly to your database history tracking logs
             system_msg = f"📊 {request.user.username} added an expense: '{expense.description}' for ${expense.amount}."
-            from groups.models import GroupMessage
             GroupMessage.objects.create(group=group, sender=None, message=system_msg)
 
-            # ⚡ Real-time WebSocket broadcast to groups app chat channel layer
+            # ⚡ Real-time WebSocket broadcast formatted to match consumer architecture exactly
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"chat_{group.id}",  
                 {
-                    "type": "chat_message",
-                    "username": "SYSTEM",
-                    "message": system_msg
+                    "type": "room_event",
+                    "event_type": "chat_message",
+                    "data": {
+                        "id": None,
+                        "sender_username": "SYSTEM",
+                        "message": system_msg,
+                        "is_system": True,
+                        "is_forwarded": False,
+                        "is_pinned": False,
+                        "is_deleted": False
+                    }
                 }
             )
 
@@ -114,7 +121,7 @@ class CreateExpenseView(APIView):
         except Exception as e:
             return custom_response(
                 success=False, 
-                message=f"Internal Server Error: {str(e)}", # 🚀 Change this to see the real error!
+                message=f"Internal Server Error: {str(e)}", 
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -164,6 +171,7 @@ class GroupBalancesView(APIView):
             data={"balances": list(member_profiles.values()), "suggested_settlements": optimized_instructions}
         )
     
+
 class ExpenseDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -185,17 +193,17 @@ class ExpenseDetailView(APIView):
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # 🚀 FIX 1: Clean, fast fallbacks pulling straight from the database model columns
+        # Fallbacks pulling straight from the database model columns
         split_type = request.data.get('split_type', expense.split_type)
         split_data = request.data.get('split_data', expense.split_data)
         total_amount = Decimal(str(request.data.get('amount', expense.amount)))
 
         try:
             with transaction.atomic():
-                # 1. Update core expense details (saves split_type and split_data if passed)
+                # 1. Update core expense details
                 updated_expense = serializer.save()
 
-                # 🚀 FIX 2: Always clear and recalculate if amount, split type, OR split distribution changes
+                # Always clear and recalculate if amount, split type, OR split distribution changes
                 if 'amount' in request.data or 'split_type' in request.data or 'split_data' in request.data:
                     expense.shares.all().delete()
 
@@ -247,14 +255,26 @@ class ExpenseDetailView(APIView):
                         for share in shares_to_create:
                             ExpenseShare.objects.create(expense=updated_expense, user_id=share['user_id'], amount=share['amount'])
 
-            # ⚡ REAL-TIME Update Broadcast
+            # 🚀 WRITE TO DB: Save update historical track log
+            update_msg = f"✏️ {request.user.username} updated the expense details for '{updated_expense.description}'."
+            GroupMessage.objects.create(group=expense.group, sender=None, message=update_msg)
+
+            # ⚡ REAL-TIME Update Broadcast matching the structural layout contract
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"chat_{expense.group.id}",  
                 {
-                    "type": "chat_message",
-                    "username": "SYSTEM",
-                    "message": f"✏️ {request.user.username} updated the expense details for '{updated_expense.description}'."
+                    "type": "room_event",
+                    "event_type": "chat_message",
+                    "data": {
+                        "id": None,
+                        "sender_username": "SYSTEM",
+                        "message": update_msg,
+                        "is_system": True,
+                        "is_forwarded": False,
+                        "is_pinned": False,
+                        "is_deleted": False
+                    }
                 }
             )
 
@@ -289,19 +309,31 @@ class ExpenseDetailView(APIView):
                 status_code=status.HTTP_403_FORBIDDEN
             )
 
-        group_id = expense.group.id
+        group = expense.group
         description = expense.description
         
         expense.delete()
 
-        # ⚡ REAL-TIME Deletion Broadcast
+        # 🚀 WRITE TO DB: Save deletion tracking log
+        delete_msg = f"🗑️ {request.user.username} deleted the expense: '{description}'."
+        GroupMessage.objects.create(group=group, sender=None, message=delete_msg)
+
+        # ⚡ REAL-TIME Deletion Broadcast matching the layout contract 
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
-            f"chat_{group_id}",  
+            f"chat_{group.id}",  
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": f"🗑️ {request.user.username} deleted the expense: '{description}'."
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": delete_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 
