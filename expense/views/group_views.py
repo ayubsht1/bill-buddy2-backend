@@ -1,17 +1,23 @@
+import os
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from decimal import Decimal
+from django.db.models import Sum
+from django.db.models.functions import TruncMonth
+from decimal import Decimal
+from google import genai
+from django.utils import timezone
 
 # Absolute imports targeting your clean folder structure
-from .models import Expense, ExpenseShare
+from ..models import Expense, ExpenseShare, PersonalExpense
 from settlement.models import Settlement  # Points to your settlement app model
-from groups.models import Group
+from groups.models import Group, GroupMessage # Imported GroupMessage for logs!
 from bill_buddy.response import custom_response  # Clean custom response path!
-from .serializers import ExpenseCreateSerializer
-from .utils import simplify_debts
+from ..serializers import ExpenseCreateSerializer
+from ..utils import simplify_debts
 
 # Real-time message broadcasting
 from channels.layers import get_channel_layer
@@ -86,17 +92,24 @@ class CreateExpenseView(APIView):
 
             # 🚀 WRITE TO DB: Save the system log text directly to your database history tracking logs
             system_msg = f"📊 {request.user.username} added an expense: '{expense.description}' for ${expense.amount}."
-            from groups.models import GroupMessage
             GroupMessage.objects.create(group=group, sender=None, message=system_msg)
 
-            # ⚡ Real-time WebSocket broadcast to groups app chat channel layer
+            # ⚡ Real-time WebSocket broadcast formatted to match consumer architecture exactly
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"chat_{group.id}",  
                 {
-                    "type": "chat_message",
-                    "username": "SYSTEM",
-                    "message": system_msg
+                    "type": "room_event",
+                    "event_type": "chat_message",
+                    "data": {
+                        "id": None,
+                        "sender_username": "SYSTEM",
+                        "message": system_msg,
+                        "is_system": True,
+                        "is_forwarded": False,
+                        "is_pinned": False,
+                        "is_deleted": False
+                    }
                 }
             )
 
@@ -114,7 +127,7 @@ class CreateExpenseView(APIView):
         except Exception as e:
             return custom_response(
                 success=False, 
-                message=f"Internal Server Error: {str(e)}", # 🚀 Change this to see the real error!
+                message=f"Internal Server Error: {str(e)}", 
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -164,6 +177,7 @@ class GroupBalancesView(APIView):
             data={"balances": list(member_profiles.values()), "suggested_settlements": optimized_instructions}
         )
     
+
 class ExpenseDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -185,17 +199,17 @@ class ExpenseDetailView(APIView):
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # 🚀 FIX 1: Clean, fast fallbacks pulling straight from the database model columns
+        # Fallbacks pulling straight from the database model columns
         split_type = request.data.get('split_type', expense.split_type)
         split_data = request.data.get('split_data', expense.split_data)
         total_amount = Decimal(str(request.data.get('amount', expense.amount)))
 
         try:
             with transaction.atomic():
-                # 1. Update core expense details (saves split_type and split_data if passed)
+                # 1. Update core expense details
                 updated_expense = serializer.save()
 
-                # 🚀 FIX 2: Always clear and recalculate if amount, split type, OR split distribution changes
+                # Always clear and recalculate if amount, split type, OR split distribution changes
                 if 'amount' in request.data or 'split_type' in request.data or 'split_data' in request.data:
                     expense.shares.all().delete()
 
@@ -247,14 +261,26 @@ class ExpenseDetailView(APIView):
                         for share in shares_to_create:
                             ExpenseShare.objects.create(expense=updated_expense, user_id=share['user_id'], amount=share['amount'])
 
-            # ⚡ REAL-TIME Update Broadcast
+            # 🚀 WRITE TO DB: Save update historical track log
+            update_msg = f"✏️ {request.user.username} updated the expense details for '{updated_expense.description}'."
+            GroupMessage.objects.create(group=expense.group, sender=None, message=update_msg)
+
+            # ⚡ REAL-TIME Update Broadcast matching the structural layout contract
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f"chat_{expense.group.id}",  
                 {
-                    "type": "chat_message",
-                    "username": "SYSTEM",
-                    "message": f"✏️ {request.user.username} updated the expense details for '{updated_expense.description}'."
+                    "type": "room_event",
+                    "event_type": "chat_message",
+                    "data": {
+                        "id": None,
+                        "sender_username": "SYSTEM",
+                        "message": update_msg,
+                        "is_system": True,
+                        "is_forwarded": False,
+                        "is_pinned": False,
+                        "is_deleted": False
+                    }
                 }
             )
 
@@ -289,23 +315,192 @@ class ExpenseDetailView(APIView):
                 status_code=status.HTTP_403_FORBIDDEN
             )
 
-        group_id = expense.group.id
+        group = expense.group
         description = expense.description
         
         expense.delete()
 
-        # ⚡ REAL-TIME Deletion Broadcast
+        # 🚀 WRITE TO DB: Save deletion tracking log
+        delete_msg = f"🗑️ {request.user.username} deleted the expense: '{description}'."
+        GroupMessage.objects.create(group=group, sender=None, message=delete_msg)
+
+        # ⚡ REAL-TIME Deletion Broadcast matching the layout contract 
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
-            f"chat_{group_id}",  
+            f"chat_{group.id}",  
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": f"🗑️ {request.user.username} deleted the expense: '{description}'."
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": delete_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 
         return custom_response(
             success=True,
             message="Expense deleted successfully."
+        )
+    
+class DashboardAnalyticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # 👥 1. CALCULATE NET BALANCES ACROSS ALL SHARED GROUPS
+        net_group_balance = Decimal('0.00')
+        user_groups = Group.objects.filter(members=user)
+
+        for group in user_groups:
+            paid_by_user = Expense.objects.filter(group=group, paid_by=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            user_shares = ExpenseShare.objects.filter(expense__group=group, user=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            settlements_paid = Settlement.objects.filter(group=group, paid_by=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            settlements_received = Settlement.objects.filter(group=group, paid_to=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+            net_group_balance += (paid_by_user - user_shares + settlements_paid - settlements_received)
+
+        # Base querysets
+        personal_qs = PersonalExpense.objects.filter(user=user)
+        
+        # 🗓️ GET CURRENT YEAR AND MONTH FOR FILTERING CARDS/PIE CHARTS
+        today = timezone.now().date()
+        current_month_qs = personal_qs.filter(date__year=today.year, date__month=today.month)
+
+        # 🛍️ 2. PERSONAL EXPENSE BREAKDOWN (Locked to current month for accurate Pie/Donut breakdown)
+        category_breakdown = (
+            current_month_qs.filter(transaction_type='EXPENSE')
+            .values('category')
+            .annotate(total_amount=Sum('amount'))
+            .order_by('-total_amount')
+        )
+        formatted_categories = {item['category']: float(item['total_amount']) for item in category_breakdown}
+
+        # 📈 3. MONTHLY HISTORICAL TREND LINES (Keeps lifetime historical query for bar charts)
+        monthly_trends = (
+            personal_qs.annotate(month=TruncMonth('date'))
+            .values('month', 'transaction_type')
+            .annotate(total=Sum('amount'))
+            .order_by('-month')
+        )
+
+        trends_map = {}
+        for item in monthly_trends:
+            if not item['month']:
+                continue
+            month_str = item['month'].strftime("%B %Y")
+            
+            if month_str not in trends_map:
+                trends_map[month_str] = {"month": month_str, "income": 0.0, "expense": 0.0}
+            
+            t_type = item['transaction_type'].lower()
+            trends_map[month_str][t_type] = float(item['total'])
+
+        formatted_trends = list(trends_map.values())[:6]
+
+        # 💰 4. CALCULATE CURRENT MONTH TOTAL VALUES FOR CARD SUMMARIES ONLY
+        total_income_this_month = current_month_qs.filter(transaction_type='INCOME').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        total_expense_this_month = current_month_qs.filter(transaction_type='EXPENSE').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        dashboard_payload = {
+            "summary": {
+                "net_group_balance": float(net_group_balance),
+                "balance_status": "YOU_ARE_OWED" if net_group_balance > 0 else ("OWED_MONEY" if net_group_balance < 0 else "SETTLED"),
+                "total_personal_income_this_month": float(total_income_this_month),
+                "total_personal_spent_this_month": float(total_expense_this_month),
+                "net_personal_savings": float(total_income_this_month - total_expense_this_month)
+            },
+            "category_distribution": formatted_categories,
+            "monthly_history": formatted_trends
+        }
+
+        return custom_response(
+            success=True,
+            message="Dashboard metrics generated successfully.",
+            data=dashboard_payload,
+            status_code=status.HTTP_200_OK
+        )
+
+
+class DashboardAiInsightsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        import google.genai as genai
+
+        # 👥 1. AGGREGATE NET BALANCES ACROSS ALL SHARED GROUPS
+        net_group_balance = Decimal('0.00')
+        user_groups = Group.objects.filter(members=user)
+        
+        for group in user_groups:
+            paid_by_user = Expense.objects.filter(group=group, paid_by=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            user_shares = ExpenseShare.objects.filter(expense__group=group, user=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            settlements_paid = Settlement.objects.filter(group=group, paid_by=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            settlements_received = Settlement.objects.filter(group=group, paid_to=user).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            net_group_balance += (paid_by_user - user_shares + settlements_paid - settlements_received)
+
+        # Base querysets
+        personal_qs = PersonalExpense.objects.filter(user=user)
+        
+        # 🗓️ LOCK AI TO CURRENT CALENDAR MONTH DATA ONLY
+        today = timezone.now().date()
+        current_month_qs = personal_qs.filter(date__year=today.year, date__month=today.month)
+        
+        total_personal_income = current_month_qs.filter(transaction_type='INCOME').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        total_personal_expense = current_month_qs.filter(transaction_type='EXPENSE').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+        category_breakdown = (
+            current_month_qs.filter(transaction_type='EXPENSE')
+            .values('category')
+            .annotate(total_amount=Sum('amount'))
+            .order_by('-total_amount')
+        )
+        formatted_categories = {item['category']: float(item['total_amount']) for item in category_breakdown}
+
+        finance_context = {
+            "username": user.username,
+            "net_group_balance": float(net_group_balance),
+            "total_income_this_month": float(total_personal_income),
+            "total_expense_this_month": float(total_personal_expense),
+            "expense_category_distribution": formatted_categories,
+        }
+
+        try:
+            client = genai.Client()
+            
+            system_prompt = (
+                "You are Bill Buddy's AI Financial Coach. Analyze the provided financial data map for the user.\n"
+                "Provide exactly three actionable, highly personalized, bulleted insight sentences for their dashboard widget.\n"
+                "Rule 1: Cross-reference income vs expenses. Highlight their net savings pattern or warn them if expenses exceed income.\n"
+                "Rule 2: Call out group balances dynamically. Remind them to collect money if owed, or clear tabs if they owe friends.\n"
+                "Rule 3: Pinpoint the top category drain from their category distribution details.\n"
+                "Tone: Clear, casual, direct, encouraging, and tech-focused. Never use markdown headers (e.g., #, ##) or bullet points symbols in the core text. Return plain text separated by newlines starting with a standard dash or bullet character."
+            )
+
+            response = client.models.generate_content(
+                model="gemini-3.5-flash",
+                contents=f"Analyze this financial context snapshot: {finance_context}",
+                config={"system_instruction": system_prompt, "temperature": 0.7}
+            )
+            
+            ai_text_output = response.text
+
+        except Exception as e:
+            ai_text_output = (
+                "• Your combined personal transactions and shared group records are successfully mapped.\n"
+                "• Keep adding your income streams and bill split records to unlock deep budget analysis calculations.\n"
+                "• Ensure your system environment variables contain a valid Gemini API configuration key to unlock real-time financial insights."
+            )
+
+        return custom_response(
+            success=True,
+            message="AI financial health tracking overview insights computed.",
+            data={"insights": ai_text_output.strip()}
         )

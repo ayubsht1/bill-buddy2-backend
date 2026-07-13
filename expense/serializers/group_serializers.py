@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Expense, ExpenseShare
+from ..models import Expense, ExpenseShare
 
 class ExpenseShareSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source='user.id')

@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction
 from decimal import Decimal
 
-from groups.models import Group
+from groups.models import Group, GroupMessage # Standardized import path
 from bill_buddy.response import custom_response
 from .models import Settlement
 from .serializers import SettlementSerializer
@@ -51,7 +51,7 @@ class RecordSettlementView(APIView):
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # 👥 1. RESOLVE PAYER: Get paid_by from JSON data, or fall back to request.user
+        # 👥 1. RESOLVE PAYER
         paid_by_user = serializer.validated_data.get('paid_by', request.user)
         if not group.members.filter(id=paid_by_user.id).exists():
             return custom_response(
@@ -67,7 +67,7 @@ class RecordSettlementView(APIView):
 
         amount_to_settle = Decimal(str(serializer.validated_data['amount']))
 
-        # 🔒 3. BOUNDARY SAFETY CHECK: Calculate current net balance of the target payer
+        # 🔒 3. BOUNDARY SAFETY CHECK
         user_balance = Decimal('0.00')
         for exp in Expense.objects.filter(group=group, paid_by=paid_by_user):
             user_balance += exp.amount
@@ -99,17 +99,24 @@ class RecordSettlementView(APIView):
             else:
                 system_msg = f"✅ {request.user.username} settled ${settlement.amount} with {paid_to_user.username}."
                 
-            from groups.models import GroupMessage
             GroupMessage.objects.create(group=group, sender=None, message=system_msg)
 
-        # ⚡ REAL-TIME: Broadcast to WebSockets
+        # ⚡ REAL-TIME: Broadcast using structural layout contract
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f"chat_{group.id}",  
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": system_msg
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": system_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 
@@ -145,17 +152,24 @@ class SettlementDetailView(APIView):
             
             # Log the rollback to the database chat history log too
             delete_msg = f"⚠️ {request.user.username} deleted the settlement record of ${amount} to {recipient_name}."
-            from groups.models import GroupMessage
             GroupMessage.objects.create(group_id=group_id, sender=None, message=delete_msg)
 
-        # ⚡ REAL-TIME: Notify room channel layer that a payment was undone
+        # ⚡ REAL-TIME: Notify room channel layer using structural layout contract
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f"chat_{group_id}",  
             {
-                "type": "chat_message",
-                "username": "SYSTEM",
-                "message": delete_msg
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": delete_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
             }
         )
 

@@ -3,6 +3,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
 from .models import Group, GroupMessage
+from .serializers import GroupMessageSerializer  # Import your serializer here!
 
 class GroupChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -37,42 +38,142 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
             )
 
     async def receive(self, text_data):
-        """Receives incoming JSON message strings from a client socket."""
+        """Receives structured commands from a client socket."""
         try:
             data = json.loads(text_data)
-            message_text = data.get('message', '').strip()
         except json.JSONDecodeError:
             return
 
-        if not message_text:
-            return
+        action = data.get('action', 'send_message')  # Default fallback
 
-        # Save to database asynchronously 
-        await self.save_message(self.group_id, self.user, message_text)
+        # --- ACTION 1: SEND OR REPLY OR FORWARD ---
+        if action == 'send_message':
+            message_text = data.get('message', '').strip()
+            reply_to_id = data.get('reply_to_id')
+            forward_message_id = data.get('forward_message_id')
 
-        # Broadcast the message outward to everyone attached to this group channel layer
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'chat_message', # calls the method below
-                'username': self.user.username,
-                'message': message_text
-            }
-        )
+            # Process forward text if provided
+            if forward_message_id:
+                forwarded_text = await self.get_forward_text(forward_message_id, self.user)
+                if not forwarded_text:
+                    return  # Access denied or message missing
+                message_text = forwarded_text
+                is_forwarded = True
+            else:
+                is_forwarded = False
 
-    async def chat_message(self, event):
-        """Sends the broadcast event downward directly to the client's device."""
+            if not message_text and not forward_message_id:
+                return
+
+            # Save structural entry
+            serialized_data = await self.save_message(
+                self.group_id, self.user, message_text, reply_to_id, is_forwarded
+            )
+            
+            # Broadcast out
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'room_event',
+                    'event_type': 'chat_message',
+                    'data': serialized_data
+                }
+            )
+
+        # --- ACTION 2: PIN / UNPIN ---
+        elif action in ['pin', 'unpin']:
+            message_id = data.get('message_id')
+            if not message_id:
+                return
+            
+            is_pinned = (action == 'pin')
+            serialized_data = await self.toggle_pin_message(message_id, self.group_id, is_pinned)
+            
+            if serialized_data:
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'room_event',
+                        'event_type': 'message_update',
+                        'data': serialized_data
+                    }
+                )
+
+        # --- ACTION 3: DELETE ---
+        elif action == 'delete':
+            message_id = data.get('message_id')
+            if not message_id:
+                return
+            
+            serialized_data = await self.delete_message(message_id, self.group_id, self.user)
+            if serialized_data:
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'room_event',
+                        'event_type': 'message_update',
+                        'data': serialized_data
+                    }
+                )
+
+    async def room_event(self, event):
+        """Unified transmitter for all structured room data events down to client devices."""
         await self.send(text_data=json.dumps({
-            'username': event['username'],
-            'message': event['message']
+            'event_type': event['event_type'],
+            'payload': event['data']
         }))
 
-    # --- Database Helpers ---
+
+    # --- 🛠️ Async Database Layer Helpers ---
+
     @database_sync_to_async
     def check_membership(self, group_id, user):
         return Group.objects.filter(id=group_id, members=user).exists()
 
     @database_sync_to_async
-    def save_message(self, group_id, user, text):
+    def get_forward_text(self, message_id, user):
+        try:
+            msg = GroupMessage.objects.get(id=message_id)
+            # Make sure user has access to the group the original message belongs to
+            if msg.group.members.filter(id=user.id).exists():
+                return msg.message
+        except GroupMessage.DoesNotExist:
+            return None
+        return None
+
+    @database_sync_to_async
+    def save_message(self, group_id, user, text, reply_to_id, is_forwarded):
         group = Group.objects.get(id=group_id)
-        return GroupMessage.objects.create(group=group, sender=user, message=text)
+        reply_to_obj = None
+        if reply_to_id:
+            reply_to_obj = GroupMessage.objects.filter(id=reply_to_id, group=group).first()
+
+        # Modified to handle systems / deleted users gracefully if user is passed as None
+        msg = GroupMessage.objects.create(
+            group=group, 
+            sender=user if user and user.is_authenticated else None, 
+            message=text, 
+            reply_to=reply_to_obj,
+            is_forwarded=is_forwarded
+        )
+        return GroupMessageSerializer(msg).data
+
+    @database_sync_to_async
+    def toggle_pin_message(self, message_id, group_id, should_pin):
+        msg = GroupMessage.objects.filter(id=message_id, group_id=group_id).first()
+        if msg:
+            msg.is_pinned = should_pin
+            msg.save()
+            return GroupMessageSerializer(msg).data
+        return None
+
+    @database_sync_to_async
+    def delete_message(self, message_id, group_id, user):
+        msg = GroupMessage.objects.filter(id=message_id, group_id=group_id).first()
+        if msg:
+            # Authorization check: only the sender or group owner/creator can delete
+            if msg.sender == user or msg.group.creator == user:
+                msg.is_deleted = True
+                msg.save()
+                return GroupMessageSerializer(msg).data
+        return None
