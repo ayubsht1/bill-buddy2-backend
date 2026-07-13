@@ -11,10 +11,28 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ('email', 'firstName', 'lastName', 'password', 'username')
+        # 🌟 FORCE DRF implicit unique validators to use your clean string
+        extra_kwargs = {
+            'email': {
+                'error_messages': {
+                    'unique': 'User already exists.'
+                }
+            },
+            'username': {
+                'error_messages': {
+                    'unique': 'User already exists.'
+                }
+            }
+        }
 
     def validate_email(self, value):
         if CustomUser.objects.filter(email=value).exists():
-            raise serializers.ValidationError("User with this email already exists.")
+            raise serializers.ValidationError("User already exists.")
+        return value
+
+    def validate_username(self, value):
+        if CustomUser.objects.filter(username=value).exists():
+            raise serializers.ValidationError("User already exists.")
         return value
 
     def create(self, validated_data):
@@ -27,6 +45,16 @@ class RegisterSerializer(serializers.ModelSerializer):
             is_active=False  # Require email verification
         )
         return user
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    firstName = serializers.CharField(source='first_name', max_length=150, allow_blank=True, required=False)
+    lastName = serializers.CharField(source='last_name', max_length=150, allow_blank=True, required=False)
+    profilePicture = serializers.CharField(source='profile_picture', allow_blank=True, required=False)
+
+    class Meta:
+        model = CustomUser
+        fields = ('id', 'email', 'username', 'firstName', 'lastName', 'profilePicture', 'is_active')
+        read_only_fields = ('id', 'email', 'is_active')
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
     token = serializers.CharField()

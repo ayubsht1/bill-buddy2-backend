@@ -7,23 +7,43 @@ from .utils import send_verification_email, send_password_reset_email
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework.permissions import IsAuthenticated
 from .response import custom_response
-from .serializers import RegisterSerializer, PasswordResetConfirmSerializer
+from .serializers import RegisterSerializer, PasswordResetConfirmSerializer, UserProfileSerializer
 from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 from django.db import IntegrityError, transaction
-User = get_user_model()
 from django.http import HttpResponseRedirect
 from django.conf import settings
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+import os
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+User = get_user_model()
 
 class RegisterView(APIView):
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
         if not serializer.is_valid():
+            # 🌟 Extract the first available error message from the dictionary
+            first_error_msg = "Validation failed"
+            if serializer.errors:
+                # Get the first field name and its list of error strings
+                first_field = next(iter(serializer.errors))
+                error_list = serializer.errors[first_field]
+                if error_list and isinstance(error_list, list):
+                    # Clean up the message string
+                    first_error_msg = str(error_list[0])
+                elif isinstance(error_list, dict):
+                    # Fallback for nested serializer structures
+                    nested_field = next(iter(error_list))
+                    first_error_msg = str(error_list[nested_field][0])
+
             return custom_response(
                 success=False,
-                message="Validation failed",
-                errors=serializer.errors,
+                message=first_error_msg,  # 🌟 Sends the exact failing reason (e.g. "This field is required.")
+                errors=serializer.errors, # Keeps full dictionary context if needed by frontend UI
                 status_code=status.HTTP_400_BAD_REQUEST
             )
 
@@ -32,7 +52,7 @@ class RegisterView(APIView):
 
         return custom_response(
             success=True,
-            message="User registered successfully, Please check your email to verify your account the link will expire in 10 minutes.",
+            message="User registered successfully. Please check your email to verify your account, the link will expire in 10 minutes.",
             status_code=status.HTTP_201_CREATED
         )
 
@@ -143,6 +163,11 @@ def generate_safe_username(email):
 class GoogleLoginView(APIView):
     def post(self, request):
         email = request.data.get("email")
+        picture_url = request.data.get("picture") 
+        
+        # 🌟 Read the first and last name sent from your frontend client payload
+        first_name = request.data.get("given_name") # Google maps this as given_name
+        last_name = request.data.get("family_name")  # Google maps this as family_name
 
         if not email:
             return custom_response(
@@ -157,16 +182,35 @@ class GoogleLoginView(APIView):
                 if user_qs.exists():
                     user = user_qs.get()
                     created = False
+                    
+                    # 🌟 If names are missing on an existing profile, catch them up
+                    updated_fields = []
+                    if not user.profile_picture and picture_url:
+                        user.profile_picture = picture_url
+                        updated_fields.append('profile_picture')
+                    if not user.first_name and first_name:
+                        user.first_name = first_name
+                        updated_fields.append('first_name')
+                    if not user.last_name and last_name:
+                        user.last_name = last_name
+                        updated_fields.append('last_name')
+                        
+                    if updated_fields:
+                        user.save(update_fields=updated_fields)
                 else:
                     safe_username = generate_safe_username(email)
                     user = User.objects.create(
                         email=email,
                         username=safe_username,
-                        first_name=None,  # optionally derive from another field if available
-                        last_name=None,
-                        is_active=True,  # auto-activate Google users
+                        first_name=first_name,  # 🌟 Automatically save Google's first name
+                        last_name=last_name,    # 🌟 Automatically save Google's last name
+                        profile_picture=picture_url,
+                        is_active=True,
                     )
+                    user.set_unusable_password()
+                    user.save()
                     created = True
+                    
         except IntegrityError:
             return custom_response(
                 success=False,
@@ -176,11 +220,7 @@ class GoogleLoginView(APIView):
 
         refresh = RefreshToken.for_user(user)
 
-        msg = (
-            "Google account created and logged in."
-            if created
-            else "Google login successful."
-        )
+        msg = "Google account created and logged in." if created else "Google login successful."
 
         return custom_response(
             success=True,
@@ -193,10 +233,124 @@ class GoogleLoginView(APIView):
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
+                    "profile_picture": user.profile_picture, 
+                    "has_password": user.has_usable_password(),
                 },
             },
         )
 
+class UserProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    # Add parsers so Django can read both raw JSON and uploaded file form-data
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def get(self, request):
+        serializer = UserProfileSerializer(request.user)
+        has_password = request.user.has_usable_password()
+        return custom_response(
+            success=True,
+            message="Profile fetched successfully.",
+            data={**serializer.data, "has_password": has_password}
+        )
+
+    def put(self, request):
+        user = request.user
+        
+        # 1. Handle direct profile image file upload if present in the request
+        if 'picture_file' in request.FILES:
+            file = request.FILES['picture_file']
+            
+            # Create a clean unique path (e.g., media/profile_pics/user_5_avatar.png)
+            extension = os.path.splitext(file.name)[1]
+            file_path = f"profile_pics/user_{user.id}{extension}"
+            
+            # Save file via Django storage backend
+            saved_path = default_storage.save(file_path, ContentFile(file.read()))
+            
+            # Generate full or relative media URL 
+            user.profile_picture = request.build_absolute_uri(default_storage.url(saved_path))
+            user.save()
+
+        # 2. Run standard text field updates (username, names, or a passed Google image URL string)
+        serializer = UserProfileSerializer(user, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return custom_response(
+                success=False,
+                message="Validation failed",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+            
+        serializer.save()
+        return custom_response(
+            success=True,
+            message="Profile updated successfully.",
+            data=serializer.data
+        )
+    
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        new_password = request.data.get("new_password")
+
+        if not new_password:
+            return custom_response(
+                success=False,
+                message="New password is required.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 🌟 Cryptographic verify if user has a standard usable credentials hash
+        has_password = user.has_usable_password()
+
+        if has_password:
+            # Workflow A: Standard User -> Must verify old password match
+            old_password = request.data.get("old_password")
+            if not old_password:
+                return custom_response(
+                    success=False,
+                    message="Old password is required.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not user.check_password(old_password):
+                return custom_response(
+                    success=False,
+                    message="Incorrect old password.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            # Workflow B: Google OAuth User -> Creating a password for the very first time
+            pass 
+
+        # Enforce local Django authentication engine password complexity rules
+        try:
+            validate_password(new_password, user)
+        except ValidationError as e:
+            return custom_response(
+                success=False,
+                message="Password verification strength rules failed.",
+                errors={"new_password": list(e.messages)},
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Commit changes securely
+        user.set_password(new_password)
+        user.save()
+
+        message = (
+            "Password created successfully. You can now use email/password or Google to log in."
+            if not has_password
+            else "Password updated successfully."
+        )
+
+        return custom_response(
+            success=True,
+            message=message,
+            status_code=status.HTTP_200_OK
+        )
 
 class PasswordResetRequestView(APIView):
     def post(self, request):

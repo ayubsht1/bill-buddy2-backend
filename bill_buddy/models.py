@@ -24,6 +24,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     username = models.CharField(max_length=150, unique=True)
     first_name = models.CharField(max_length=150, blank=True, null=True)
     last_name = models.CharField(max_length=150, blank=True, null=True)
+    profile_picture = models.TextField(blank=True, null=True)
     groups = models.ManyToManyField(
         'groups.Group',
         related_name='customuser_set',
@@ -47,6 +48,11 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 
     USERNAME_FIELD = 'email'  # Still login via email
     REQUIRED_FIELDS = ['username', 'first_name', 'last_name']
+
+    class Meta:
+        # 🌟 This forces Django to use "User" instead of "Custom user" everywhere
+        verbose_name = "User"
+        verbose_name_plural = "Users"
 
     def __str__(self):
         return self.email
