@@ -148,7 +148,7 @@ class LoginView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "has_password": user.has_usable_password(),
-                }
+                    "profile_picture": user.profile_picture if user.profile_picture else None,                }
             },
         )
 
