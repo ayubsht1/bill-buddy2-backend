@@ -4,7 +4,7 @@ from rest_framework import status
 from django.contrib.auth import authenticate
 from .models import CustomUser,PasswordResetToken, EmailVerificationToken
 from .utils import send_verification_email, send_password_reset_email
-from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework.permissions import IsAuthenticated
 from .response import custom_response
 from .serializers import RegisterSerializer, PasswordResetConfirmSerializer, UserProfileSerializer
@@ -503,4 +503,41 @@ class TokenRefreshView(APIView):
                 success=False,
                 message="Token is invalid or has expired.",
                 status_code=status.HTTP_401_UNAUTHORIZED
+            )
+
+class VerifyTokenView(APIView):
+    """
+    Fast, memory-only access token verification.
+    """
+    def post(self, request):
+        token_str = request.data.get("token")
+        
+        if not token_str:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                token_str = auth_header.split(" ")[1]
+
+        if not token_str:
+            return custom_response(
+                success=False,
+                message="Access token is required.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # SimpleJWT validates signature & expiration without DB queries
+            AccessToken(token_str)
+
+            return custom_response(
+                success=True,
+                message="Token is valid.",
+                data={"is_valid": True}
+            )
+
+        except TokenError:
+            return custom_response(
+                success=False,
+                message="Token is invalid or expired.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                data={"is_valid": False}
             )
