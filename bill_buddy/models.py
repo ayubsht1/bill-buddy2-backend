@@ -24,7 +24,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     username = models.CharField(max_length=150, unique=True)
     first_name = models.CharField(max_length=150, blank=True, null=True)
     last_name = models.CharField(max_length=150, blank=True, null=True)
-    profile_picture = models.TextField(blank=True, null=True)
+    profile_picture = models.CharField(max_length=500, blank=True, null=True)
     groups = models.ManyToManyField(
         'groups.Group',
         related_name='customuser_set',

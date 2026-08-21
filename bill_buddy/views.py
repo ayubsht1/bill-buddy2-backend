@@ -246,34 +246,23 @@ class UserProfileView(APIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get(self, request):
-        serializer = UserProfileSerializer(request.user)
+        serializer = UserProfileSerializer(request.user, context={'request': request})
         has_password = request.user.has_usable_password()
+
         return custom_response(
             success=True,
             message="Profile fetched successfully.",
             data={**serializer.data, "has_password": has_password}
         )
 
-    def put(self, request):
-        user = request.user
+    def patch(self, request):
+        serializer = UserProfileSerializer(
+            request.user, 
+            data=request.data, 
+            partial=True,
+            context={'request': request}  # Passes request context to build absolute image URLs
+        )
         
-        # 1. Handle direct profile image file upload if present in the request
-        if 'picture_file' in request.FILES:
-            file = request.FILES['picture_file']
-            
-            # Create a clean unique path (e.g., media/profile_pics/user_5_avatar.png)
-            extension = os.path.splitext(file.name)[1]
-            file_path = f"profile_pics/user_{user.id}{extension}"
-            
-            # Save file via Django storage backend
-            saved_path = default_storage.save(file_path, ContentFile(file.read()))
-            
-            # Generate full or relative media URL 
-            user.profile_picture = request.build_absolute_uri(default_storage.url(saved_path))
-            user.save()
-
-        # 2. Run standard text field updates (username, names, or a passed Google image URL string)
-        serializer = UserProfileSerializer(user, data=request.data, partial=True)
         if not serializer.is_valid():
             return custom_response(
                 success=False,
@@ -283,11 +272,17 @@ class UserProfileView(APIView):
             )
             
         serializer.save()
+        has_password = request.user.has_usable_password()
+        
         return custom_response(
             success=True,
             message="Profile updated successfully.",
-            data=serializer.data
+            data={**serializer.data, "has_password": has_password}
         )
+
+    # Route PUT requests to patch so partial profile updates (like updating only a username or picture) work cleanly
+    def put(self, request):
+        return self.patch(request)
     
 class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
