@@ -77,3 +77,4 @@ class EmailVerificationToken(models.Model):
 
     def is_expired(self):
         return (timezone.now() - self.created_at).total_seconds() > 60 * 5
+     

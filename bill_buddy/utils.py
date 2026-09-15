@@ -2,7 +2,7 @@ from django.core.mail import send_mail
 from django.urls import reverse
 from django.conf import settings
 from .models import PasswordResetToken, EmailVerificationToken
-from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
+from django.core.signing import TimestampSigner
 
 def send_verification_email(user, request):
     signer = TimestampSigner()
