@@ -12,8 +12,8 @@ class Group(models.Model):
     description = models.TextField(blank=True, null=True)
     # The creator of the group
     creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_groups")
-    # Many-to-many relationship tracking everyone inside the group
-    members = models.ManyToManyField(User, related_name="joined_groups")
+    # Many-to-many relationship tracking everyone inside the group (through GroupMembership)
+    members = models.ManyToManyField(User, related_name="joined_groups", through='GroupMembership')
     # Alphanumeric code used by friends to join the group
     join_code = models.CharField(max_length=10, unique=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -31,6 +31,44 @@ class Group(models.Model):
     def __str__(self):
         return self.name
     
+    def get_user_role(self, user):
+        """Get the role of a user in this group"""
+        try:
+            membership = GroupMembership.objects.get(group=self, user=user)
+            return membership.role
+        except GroupMembership.DoesNotExist:
+            return None
+    
+    def is_member(self, user):
+        """Check if user is a member of this group"""
+        return self.members.filter(id=user.id).exists()
+    
+    def is_owner(self, user):
+        """Check if user is the owner of this group"""
+        return self.creator == user
+    
+    def is_admin(self, user):
+        """Check if user is an admin or owner of this group"""
+        role = self.get_user_role(user)
+        return role in ['owner', 'admin'] or self.creator == user
+
+
+class GroupMembership(models.Model):
+    class Role(models.TextChoices):
+        OWNER = 'owner', 'Owner'
+        ADMIN = 'admin', 'Admin'
+        MEMBER = 'member', 'Member'
+    
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='memberships')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='group_memberships')
+    role = models.CharField(max_length=10, choices=Role.choices, default=Role.MEMBER)
+    joined_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        unique_together = ('group', 'user')
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.group.name} ({self.role})"
 
 # Add this to groups/models.py
 
