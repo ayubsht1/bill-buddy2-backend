@@ -2,7 +2,7 @@ from django.urls import path
 from .views import CreateExpenseView, GroupBalancesView, ExpenseDetailView, PersonalExpenseListCreateView, PersonalExpenseDetailView, DashboardAnalyticsView, DashboardAiInsightsView
 
 urlpatterns = [
-    # Matches: POST /api/expenses/group/<group_id>/
+    # Matches: GET / POST /api/expenses/group/<group_id>/
     path('group/<int:group_id>/', CreateExpenseView.as_view(), name='create-expense'),
     
     # Matches: GET /api/expenses/group/<group_id>/balances/

@@ -1,24 +1,72 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Group, GroupMessage
+from .models import Group, GroupMessage, GroupMembership
 
 User = get_user_model()
 
 class GroupMemberSerializer(serializers.ModelSerializer):
     """Provides minimal, clean user detail fields for group listings."""
+    role = serializers.SerializerMethodField()
+    
     class Meta:
         model = User
-        fields = ['id', 'username', 'email']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'role']
+    
+    def get_role(self, obj):
+        request = self.context.get('request')
+        group = self.context.get('group')
+        if group and request:
+            return next(
+                (
+                    membership.role
+                    for membership in group.memberships.all()
+                    if membership.user_id == obj.id
+                ),
+                None
+            )
+        return None
+
+
+class GroupMembershipSerializer(serializers.ModelSerializer):
+    user = GroupMemberSerializer(read_only=True)
+    
+    class Meta:
+        model = GroupMembership
+        fields = ['id', 'user', 'role', 'joined_at']
+        read_only_fields = ['id', 'joined_at']
 
 
 class GroupSerializer(serializers.ModelSerializer):
     creator = GroupMemberSerializer(read_only=True)
-    members = GroupMemberSerializer(many=True, read_only=True)
+    members = serializers.SerializerMethodField()
+    memberships = GroupMembershipSerializer(many=True, read_only=True)
     join_code = serializers.CharField(read_only=True)
-
+    user_role = serializers.SerializerMethodField()
+    
     class Meta:
         model = Group
-        fields = ['id', 'name', 'description', 'creator', 'members', 'join_code', 'created_at']
+        fields = ['id', 'name', 'description', 'creator', 'members', 'memberships', 'join_code', 'created_at', 'user_role']
+    
+    def get_members(self, obj):
+        context = {**self.context, 'group': obj}
+        return GroupMembershipSerializer(
+            obj.memberships.all(),
+            many=True,
+            context=context
+        ).data
+    
+    def get_user_role(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return next(
+                (
+                    membership.role
+                    for membership in obj.memberships.all()
+                    if membership.user_id == request.user.id
+                ),
+                None
+            )
+        return None
 
 
 class GroupMessageSerializer(serializers.ModelSerializer):
@@ -30,8 +78,8 @@ class GroupMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = GroupMessage
         fields = [
-            'id', 'sender_username', 'message', 'timestamp', 
-            'is_system', 'reply_to_id', 'reply_to_text', 
+            'id', 'sender_username', 'message', 'timestamp',
+            'is_system', 'reply_to_id', 'reply_to_text',
             'is_forwarded', 'is_pinned', 'is_deleted'
         ]
 

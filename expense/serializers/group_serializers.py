@@ -10,9 +10,8 @@ class ExpenseShareSerializer(serializers.ModelSerializer):
         fields = ['user_id', 'email', 'amount']
 
 class ExpenseCreateSerializer(serializers.ModelSerializer):
-    # This explicit definition allows DRF to handle raw array validation cleanly before reaching the view
     split_data = serializers.ListField(
-        child=serializers.DictField(), 
+        child=serializers.JSONField(),
         write_only=True, 
         required=False
     )
@@ -27,3 +26,19 @@ class ExpenseCreateSerializer(serializers.ModelSerializer):
         model = Expense
         fields = ['id', 'group', 'description', 'amount', 'paid_by', 'date', 'split_type', 'split_data', 'shares']
         read_only_fields = ['paid_by', 'group']
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Expense amount must be greater than zero.")
+        return value
+
+    def validate(self, attrs):
+        split_type = attrs.get('split_type', getattr(self.instance, 'split_type', 'EQUAL'))
+        split_data = attrs.get('split_data', getattr(self.instance, 'split_data', []))
+        if split_type != 'EQUAL' and not split_data:
+            raise serializers.ValidationError({
+                'split_data': "Custom splits require participant data."
+            })
+        if not isinstance(split_data, list):
+            raise serializers.ValidationError({'split_data': "Split data must be a list."})
+        return attrs

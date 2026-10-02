@@ -2,14 +2,16 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 from bill_buddy.response import custom_response
-from .models import Group, GroupMessage
-from .serializers import GroupSerializer, GroupMessageSerializer
+from .models import Group, GroupMessage, GroupMembership
+from .serializers import GroupSerializer, GroupMessageSerializer, GroupMembershipSerializer
 
 # Real-time WebSocket support for the REST post method
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from expense.utils import group_net_balances
 
 from django.contrib.auth import get_user_model
 User = get_user_model()
@@ -19,8 +21,10 @@ class GroupListCreateView(APIView):
 
     def get(self, request):
         """Fetch all groups that the logged-in user belongs to."""
-        groups = request.user.joined_groups.all().order_by('-created_at')
-        serializer = GroupSerializer(groups, many=True)
+        groups = request.user.joined_groups.select_related('creator').prefetch_related(
+            'memberships__user'
+        ).order_by('-created_at')
+        serializer = GroupSerializer(groups, many=True, context={'request': request})
         return custom_response(
             success=True,
             message="User groups retrieved successfully.",
@@ -28,22 +32,21 @@ class GroupListCreateView(APIView):
         )
 
     def post(self, request):
-        """Create a new group and automatically attach the creator as member #1."""
+        """Create a new group and automatically attach the creator as member #1 with owner role."""
         serializer = GroupSerializer(data=request.data)
         if not serializer.is_valid():
             return custom_response(
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
         
-        # Save group with authenticated user as the creator
-        group = serializer.save(creator=request.user)
-        # Explicitly append them to the many-to-many members array too!
-        group.members.add(request.user)
+        with transaction.atomic():
+            group = serializer.save(creator=request.user)
+            GroupMembership.objects.create(group=group, user=request.user, role=GroupMembership.Role.OWNER)
 
         return custom_response(
             success=True,
             message="Group created successfully.",
-            data=GroupSerializer(group).data,
+            data=GroupSerializer(group, context={'request': request}).data,
             status_code=status.HTTP_201_CREATED
         )
 
@@ -51,21 +54,61 @@ class GroupListCreateView(APIView):
 class GroupDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def _get_group_for_member(self, request, group_id):
+        group = get_object_or_404(
+            Group.objects.select_related('creator').prefetch_related('memberships__user'),
+            id=group_id
+        )
+        if not group.members.filter(id=request.user.id).exists():
+            return None
+        return group
+
     def get(self, request, group_id):
         """Fetch details for a single specific group (essential for dashboard headers)."""
-        group = get_object_or_404(Group, id=group_id)
-        
-        if not group.members.filter(id=request.user.id).exists():
+        group = self._get_group_for_member(request, group_id)
+        if group is None:
             return custom_response(
                 success=False, message="Access denied. You are not a member of this group.", status_code=status.HTTP_403_FORBIDDEN
             )
             
-        serializer = GroupSerializer(group)
+        serializer = GroupSerializer(group, context={'request': request, 'group': group})
         return custom_response(
             success=True,
             message="Group details retrieved successfully.",
             data=serializer.data
         )
+
+    def patch(self, request, group_id):
+        group = self._get_group_for_member(request, group_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="Access denied. You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+        if not group.is_admin(request.user):
+            return custom_response(
+                success=False,
+                message="Only group admins can update group details.",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+        serializer = GroupSerializer(group, data=request.data, partial=True, context={'request': request})
+        if not serializer.is_valid():
+            return custom_response(
+                success=False,
+                message="Validation error",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+        serializer.save()
+        return custom_response(
+            success=True,
+            message="Group updated successfully.",
+            data=GroupSerializer(group, context={'request': request, 'group': group}).data
+        )
+
+    def put(self, request, group_id):
+        return self.patch(request, group_id)
 
     def delete(self, request, group_id):
         """💥 Destroys the group entirely. Restricted exclusively to the Group Owner."""
@@ -129,18 +172,21 @@ class JoinGroupView(APIView):
                 success=False, message="Invalid join code. Group not found.", status_code=status.HTTP_404_NOT_FOUND
             )
 
-        # Safety Check: Are they already in it?
-        if group.members.filter(id=request.user.id).exists():
-            return custom_response(
-                success=False, message="You are already a member of this group.", status_code=status.HTTP_400_BAD_REQUEST
+        with transaction.atomic():
+            group = Group.objects.select_for_update().get(id=group.id)
+            membership, created = GroupMembership.objects.get_or_create(
+                group=group,
+                user=request.user,
+                defaults={'role': GroupMembership.Role.MEMBER}
             )
-
-        # Add user to the group
-        group.members.add(request.user)
-
-        # 🚀 WRITE TO DB: Save the system log for historical scrollback
-        join_msg = f"🎉 {request.user.username} joined the group!"
-        GroupMessage.objects.create(group=group, sender=None, message=join_msg)
+            if not created:
+                return custom_response(
+                    success=False,
+                    message="You are already a member of this group.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            join_msg = f"{request.user.username} joined the group!"
+            GroupMessage.objects.create(group=group, sender=None, message=join_msg)
 
         # ⚡ REAL-TIME: Fixed to structure properly with consumer channel architectures
         channel_layer = get_channel_layer()
@@ -164,7 +210,7 @@ class JoinGroupView(APIView):
         return custom_response(
             success=True,
             message=f"Successfully joined group: '{group.name}'.",
-            data=GroupSerializer(group).data
+            data=GroupSerializer(group, context={'request': request}).data
         )
 
 
@@ -268,22 +314,22 @@ class AddGroupMemberView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, group_id):
-        """Allows ONLY the group creator to directly force-add a member via identifier (email or username)."""
+        """Allows group admins/owner to add a member via identifier (email or username)."""
         group = get_object_or_404(Group, id=group_id)
 
-        # 🔒 Security: Only the creator of the group is authorized to invoke this route
-        if group.creator != request.user:
+        # 🔒 Security: Only admins/owner can add members
+        if not group.is_admin(request.user):
             return custom_response(
-                success=False, 
-                message="Access denied. Only the group creator can directly add members.", 
+                success=False,
+                message="Access denied. Only group admins can add members.",
                 status_code=status.HTTP_403_FORBIDDEN
             )
 
         identifier = request.data.get('identifier', '').strip()
         if not identifier:
             return custom_response(
-                success=False, 
-                message="Please provide an email or username string as an 'identifier'.", 
+                success=False,
+                message="Please provide an email or username string as an 'identifier'.",
                 status_code=status.HTTP_400_BAD_REQUEST
             )
 
@@ -292,25 +338,32 @@ class AddGroupMemberView(APIView):
         
         if not target_user:
             return custom_response(
-                success=False, 
-                message="User not found with the provided credential.", 
+                success=False,
+                message="User not found with the provided credential.",
                 status_code=status.HTTP_404_NOT_FOUND
             )
 
-        # Safety Check: Is this user already in the group array?
-        if group.members.filter(id=target_user.id).exists():
-            return custom_response(
-                success=False, 
-                message="That user is already a member of this group.", 
-                status_code=status.HTTP_400_BAD_REQUEST
+        with transaction.atomic():
+            group = Group.objects.select_for_update().get(id=group_id)
+            if not group.is_admin(request.user):
+                return custom_response(
+                    success=False,
+                    message="Access denied. Only group admins can add members.",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+            membership, created = GroupMembership.objects.get_or_create(
+                group=group,
+                user=target_user,
+                defaults={'role': GroupMembership.Role.MEMBER}
             )
-
-        # ➕ Inject them into the ManyToMany field
-        group.members.add(target_user)
-
-        # 🚀 WRITE TO DB: Save the system log for historical scrollback
-        add_msg = f"🛠️ {request.user.username} added {target_user.username} to the group."
-        GroupMessage.objects.create(group=group, sender=None, message=add_msg)
+            if not created:
+                return custom_response(
+                    success=False,
+                    message="That user is already a member of this group.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            add_msg = f"{request.user.username} added {target_user.username} to the group."
+            GroupMessage.objects.create(group=group, sender=None, message=add_msg)
 
         # ⚡ Real-Time: Announce via WebSockets room channel
         channel_layer = get_channel_layer()
@@ -334,7 +387,7 @@ class AddGroupMemberView(APIView):
         return custom_response(
             success=True,
             message=f"Successfully added {target_user.username} to the group.",
-            data=GroupSerializer(group).data
+            data=GroupSerializer(group, context={'request': request}).data
         )
     
 class RemoveGroupMemberView(APIView):
@@ -343,52 +396,51 @@ class RemoveGroupMemberView(APIView):
     def delete(self, request, group_id, user_id):
         """
         Handles removing a member from a group.
-        - If the requester is the Creator: They can remove anyone (kick).
+        - If the requester is an Admin/Owner: They can remove anyone (kick).
         - If the requester is a Member: They can only remove themselves (leave).
+        - Owner cannot be removed by anyone except themselves (by deleting group).
         """
         group = get_object_or_404(Group, id=group_id)
         user_to_remove = get_object_or_404(User, id=user_id)
 
-        # 1. Check if the user to remove is actually in the group
-        if not group.members.filter(id=user_to_remove.id).exists():
-            return custom_response(
-                success=False, 
-                message="The specified user is not a member of this group.", 
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
+        with transaction.atomic():
+            group = Group.objects.select_for_update().get(id=group_id)
+            if not group.members.filter(id=user_to_remove.id).exists():
+                return custom_response(
+                    success=False,
+                    message="The specified user is not a member of this group.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
 
-        # 2. Authorization Rules
-        is_creator = (group.creator == request.user)
-        is_self_removing = (user_to_remove == request.user)
+            is_admin = group.is_admin(request.user)
+            is_self_removing = user_to_remove == request.user
+            if group.is_owner(user_to_remove):
+                return custom_response(
+                    success=False,
+                    message="Cannot remove the group owner. Owner must delete this group to leave.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            if not (is_admin or is_self_removing):
+                return custom_response(
+                    success=False,
+                    message="Access denied. You can only remove members if you are a group admin.",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+            if group_net_balances(group).get(user_to_remove.id, 0) != 0:
+                return custom_response(
+                    success=False,
+                    message="Settle this member's group balance before removing them.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
 
-        if not (is_creator or is_self_removing):
-            return custom_response(
-                success=False, 
-                message="Access denied. You can only remove members if you are the group creator.", 
-                status_code=status.HTTP_403_FORBIDDEN
-            )
-
-        # 3. Guard: Prevent the creator from accidentally abandoning their own group
-        if is_self_removing and is_creator:
-            return custom_response(
-                success=False, 
-                message="As the creator, you cannot leave the group. You must delete the group entirely or transfer ownership.", 
-                status_code=status.HTTP_400_BAD_REQUEST
-            )
-
-        # 4. Remove the user from the ManyToMany field
-        group.members.remove(user_to_remove)
-
-        # 5. Define audit log messaging based on action type
-        if is_creator and not is_self_removing:
-            broadcast_message = f"❌ {request.user.username} removed {user_to_remove.username} from the group."
-            success_message = f"Successfully removed {user_to_remove.username}."
-        else:
-            broadcast_message = f"🏃 {user_to_remove.username} has left the group."
-            success_message = "You have successfully left the group."
-
-        # 🚀 WRITE TO DB: Save the system log for historical scrollback
-        GroupMessage.objects.create(group=group, sender=None, message=broadcast_message)
+            GroupMembership.objects.filter(group=group, user=user_to_remove).delete()
+            if is_admin and not is_self_removing:
+                broadcast_message = f"{request.user.username} removed {user_to_remove.username} from the group."
+                success_message = f"Successfully removed {user_to_remove.username}."
+            else:
+                broadcast_message = f"{user_to_remove.username} has left the group."
+                success_message = "You have successfully left the group."
+            GroupMessage.objects.create(group=group, sender=None, message=broadcast_message)
 
         # ⚡ Real-Time: Broadcast the action via WebSockets room channel
         channel_layer = get_channel_layer()
@@ -412,5 +464,159 @@ class RemoveGroupMemberView(APIView):
         return custom_response(
             success=True,
             message=success_message,
-            data=GroupSerializer(group).data
+            data=GroupSerializer(group, context={'request': request}).data
+        )
+
+
+class UpdateMemberRoleView(APIView):
+    """Update a member's role (promote/demote) - only owner can do this"""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, group_id, user_id):
+        group = get_object_or_404(Group, id=group_id)
+        target_user = get_object_or_404(User, id=user_id)
+        new_role = request.data.get('role')
+
+        # Only owner can change roles
+        if not group.is_owner(request.user):
+            return custom_response(
+                success=False,
+                message="Access denied. Only the group owner can change member roles.",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+
+        # Cannot change owner's role
+        if group.is_owner(target_user):
+            return custom_response(
+                success=False,
+                message="Cannot change the owner's role.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate role
+        valid_roles = [GroupMembership.Role.ADMIN, GroupMembership.Role.MEMBER]
+        if new_role not in valid_roles:
+            return custom_response(
+                success=False,
+                message=f"Invalid role. Must be one of: {', '.join(valid_roles)}",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if target user is a member
+        if not group.members.filter(id=target_user.id).exists():
+            return custom_response(
+                success=False,
+                message="User is not a member of this group.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Update role
+        membership = GroupMembership.objects.get(group=group, user=target_user)
+        old_role = membership.role
+        membership.role = new_role
+        membership.save()
+
+        # Log the change
+        role_msg = f"🔄 {request.user.username} changed {target_user.username}'s role from {old_role} to {new_role}."
+        GroupMessage.objects.create(group=group, sender=None, message=role_msg)
+
+        # Broadcast
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{group.id}",
+            {
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": role_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
+            }
+        )
+
+        return custom_response(
+            success=True,
+            message=f"Role updated to {new_role}.",
+            data=GroupSerializer(group, context={'request': request}).data
+        )
+
+
+class TransferOwnershipView(APIView):
+    """Transfer group ownership to another member - only current owner can do this"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, group_id):
+        group = get_object_or_404(Group, id=group_id)
+        target_user = get_object_or_404(User, id=request.data.get('user_id'))
+
+        # Only current owner can transfer ownership
+        if not group.is_owner(request.user):
+            return custom_response(
+                success=False,
+                message="Access denied. Only the group owner can transfer ownership.",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+
+        # Target must be a member
+        if not group.members.filter(id=target_user.id).exists():
+            return custom_response(
+                success=False,
+                message="Target user must be a member of this group.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Cannot transfer to self
+        if target_user == request.user:
+            return custom_response(
+                success=False,
+                message="You are already the owner.",
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            # Update group creator
+            group.creator = target_user
+            group.save()
+
+            # Update memberships
+            old_owner_membership = GroupMembership.objects.get(group=group, user=request.user)
+            old_owner_membership.role = GroupMembership.Role.ADMIN
+            old_owner_membership.save()
+
+            new_owner_membership = GroupMembership.objects.get(group=group, user=target_user)
+            new_owner_membership.role = GroupMembership.Role.OWNER
+            new_owner_membership.save()
+
+        # Log the change
+        transfer_msg = f"👑 {request.user.username} transferred ownership to {target_user.username}."
+        GroupMessage.objects.create(group=group, sender=None, message=transfer_msg)
+
+        # Broadcast
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{group.id}",
+            {
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": transfer_msg,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
+            }
+        )
+
+        return custom_response(
+            success=True,
+            message=f"Ownership transferred to {target_user.username}.",
+            data=GroupSerializer(group, context={'request': request}).data
         )

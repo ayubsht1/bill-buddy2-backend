@@ -15,6 +15,10 @@ class Settlement(models.Model):
 
     class Meta:
         ordering = ['-date']
+        indexes = [
+            models.Index(fields=['group', 'paid_by'], name='settle_group_payer_idx'),
+            models.Index(fields=['group', 'date'], name='settle_group_date_idx'),
+        ]
 
     def __str__(self):
         return f"{self.paid_by.username} paid ${self.amount} to {self.paid_to.username} in {self.group.name}"

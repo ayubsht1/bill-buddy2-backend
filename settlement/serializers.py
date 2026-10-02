@@ -5,8 +5,7 @@ class SettlementSerializer(serializers.ModelSerializer):
     class Meta:
         model = Settlement
         fields = ['id', 'group', 'paid_by', 'paid_to', 'amount', 'date']
-        # 🚀 CHANGED: Removed 'paid_by' from here to allow proxy/friend logging
-        read_only_fields = ['group']
+        read_only_fields = ['group', 'paid_by']
 
     def validate(self, data):
         # 🚀 CHANGED: Grab payer from the request data, fallback to request user

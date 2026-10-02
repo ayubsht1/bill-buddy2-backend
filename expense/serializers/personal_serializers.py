@@ -7,6 +7,11 @@ class PersonalExpenseSerializer(serializers.ModelSerializer):
         fields = ['id', 'transaction_type', 'description', 'amount', 'category', 'date', 'created_at']
         read_only_fields = ['id', 'created_at']
 
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return value
+
     def validate(self, attrs):
         income_categories = ['SALARY', 'FREELANCE', 'INVESTMENT', 'GIFT']
         expense_categories = ['FOOD', 'SHOPPING', 'UTILITIES', 'TRANSPORT', 'ENTERTAINMENT', 'GROCERIES']

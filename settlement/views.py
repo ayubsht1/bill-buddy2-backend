@@ -9,11 +9,35 @@ from groups.models import Group, GroupMessage # Standardized import path
 from bill_buddy.response import custom_response
 from .models import Settlement
 from .serializers import SettlementSerializer
-from expense.models import Expense, ExpenseShare
+from expense.utils import group_net_balances, suggested_settlement_amount
 
 # Real-time WebSocket support
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+
+
+def _broadcast_system_message(group_id, message):
+    channel_layer = get_channel_layer()
+    transaction.on_commit(
+        lambda: async_to_sync(channel_layer.group_send)(
+            f"chat_{group_id}",
+            {
+                "type": "room_event",
+                "event_type": "chat_message",
+                "data": {
+                    "id": None,
+                    "sender_username": "SYSTEM",
+                    "message": message,
+                    "is_system": True,
+                    "is_forwarded": False,
+                    "is_pinned": False,
+                    "is_deleted": False
+                }
+            }
+        ),
+        robust=True
+    )
+
 
 class RecordSettlementView(APIView):
     permission_classes = [IsAuthenticated]
@@ -38,8 +62,6 @@ class RecordSettlementView(APIView):
     def post(self, request, group_id):
         """Records a new peer-to-peer settlement payment securely."""
         group = get_object_or_404(Group, id=group_id)
-
-        # Ensure the person making the API request is part of the group
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False, message="You are not a member of this group.", status_code=status.HTTP_403_FORBIDDEN
@@ -51,74 +73,57 @@ class RecordSettlementView(APIView):
                 success=False, message="Validation error", errors=serializer.errors, status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # 👥 1. RESOLVE PAYER
-        paid_by_user = serializer.validated_data.get('paid_by', request.user)
-        if not group.members.filter(id=paid_by_user.id).exists():
-            return custom_response(
-                success=False, message="The payer is not a member of this group.", status_code=status.HTTP_400_BAD_REQUEST
-            )
-
-        # 👥 2. RESOLVE RECIPIENT
+        paid_by_user = request.user
         paid_to_user = serializer.validated_data['paid_to']
-        if not group.members.filter(id=paid_to_user.id).exists():
+        amount_to_settle = serializer.validated_data['amount']
+
+        if paid_by_user == paid_to_user:
             return custom_response(
-                success=False, message="The recipient is not a member of this group.", status_code=status.HTTP_400_BAD_REQUEST
-            )
-
-        amount_to_settle = Decimal(str(serializer.validated_data['amount']))
-
-        # 🔒 3. BOUNDARY SAFETY CHECK
-        user_balance = Decimal('0.00')
-        for exp in Expense.objects.filter(group=group, paid_by=paid_by_user):
-            user_balance += exp.amount
-        for share in ExpenseShare.objects.filter(expense__group=group, user=paid_by_user):
-            user_balance -= share.amount
-        for s in Settlement.objects.filter(group=group):
-            if s.paid_by == paid_by_user:
-                user_balance += s.amount
-            if s.paid_to == paid_by_user:
-                user_balance -= s.amount
-
-        # Debt is the inverse of a negative balance
-        current_debt = -user_balance if user_balance < 0 else Decimal('0.00')
-
-        if amount_to_settle > current_debt:
-            return custom_response(
-                success=False, 
-                message=f"Validation error: Cannot settle ${amount_to_settle} because {paid_by_user.username} only owes ${current_debt.quantize(Decimal('0.01'))}.", 
+                success=False,
+                message="A user cannot settle with themselves.",
                 status_code=status.HTTP_400_BAD_REQUEST
             )
 
-        # 💾 4. COMMIT EXECUTION
         with transaction.atomic():
+            group = Group.objects.select_for_update().get(id=group_id)
+            if not group.members.filter(id=request.user.id).exists():
+                return custom_response(
+                    success=False,
+                    message="You are not a member of this group.",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+            if not group.members.filter(id=paid_to_user.id).exists():
+                return custom_response(
+                    success=False,
+                    message="The recipient is not a member of this group.",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+
+            balances = group_net_balances(group)
+            maximum_settlement = suggested_settlement_amount(
+                balances,
+                debtor_id=paid_by_user.id,
+                creditor_id=paid_to_user.id
+            )
+            if maximum_settlement <= 0 or amount_to_settle > maximum_settlement:
+                return custom_response(
+                    success=False,
+                    message="This payer-recipient pair is not a current suggested settlement, or the amount exceeds the suggested limit.",
+                    errors={
+                        "amount": (
+                            f"Maximum valid payment for this suggested pair is "
+                            f"{maximum_settlement.quantize(Decimal('0.01'))}."
+                        )
+                    },
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+
             settlement = serializer.save(paid_by=paid_by_user, group=group)
 
-            # Build contextual system log text based on proxy logging
-            if paid_by_user != request.user:
-                system_msg = f"✅ {request.user.username} recorded a settlement: {paid_by_user.username} paid ${settlement.amount} to {paid_to_user.username}."
-            else:
-                system_msg = f"✅ {request.user.username} settled ${settlement.amount} with {paid_to_user.username}."
-                
+            system_msg = f"{request.user.username} settled ${settlement.amount} with {paid_to_user.username}."
             GroupMessage.objects.create(group=group, sender=None, message=system_msg)
 
-        # ⚡ REAL-TIME: Broadcast using structural layout contract
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            f"chat_{group.id}",  
-            {
-                "type": "room_event",
-                "event_type": "chat_message",
-                "data": {
-                    "id": None,
-                    "sender_username": "SYSTEM",
-                    "message": system_msg,
-                    "is_system": True,
-                    "is_forwarded": False,
-                    "is_pinned": False,
-                    "is_deleted": False
-                }
-            }
-        )
+        _broadcast_system_message(group.id, system_msg)
 
         return custom_response(
             success=True,
@@ -144,34 +149,35 @@ class SettlementDetailView(APIView):
             )
 
         group_id = settlement.group.id
-        recipient_name = settlement.paid_to.username
-        amount = settlement.amount
-
         with transaction.atomic():
+            Group.objects.select_for_update().get(id=group_id)
+            if not Group.objects.filter(
+                id=group_id, members__id=request.user.id
+            ).exists():
+                return custom_response(
+                    success=False,
+                    message="Only a current group member can remove this settlement.",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+            settlement = get_object_or_404(
+                Settlement.objects.select_for_update().select_related('paid_to', 'paid_by'),
+                id=settlement_id
+            )
+            if settlement.paid_by_id != request.user.id:
+                return custom_response(
+                    success=False,
+                    message="Permission denied. Only the payer can delete this settlement record.",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+            recipient_name = settlement.paid_to.username
+            amount = settlement.amount
             settlement.delete()
             
             # Log the rollback to the database chat history log too
             delete_msg = f"⚠️ {request.user.username} deleted the settlement record of ${amount} to {recipient_name}."
             GroupMessage.objects.create(group_id=group_id, sender=None, message=delete_msg)
 
-        # ⚡ REAL-TIME: Notify room channel layer using structural layout contract
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            f"chat_{group_id}",  
-            {
-                "type": "room_event",
-                "event_type": "chat_message",
-                "data": {
-                    "id": None,
-                    "sender_username": "SYSTEM",
-                    "message": delete_msg,
-                    "is_system": True,
-                    "is_forwarded": False,
-                    "is_pinned": False,
-                    "is_deleted": False
-                }
-            }
-        )
+        _broadcast_system_message(group_id, delete_msg)
 
         return custom_response(
             success=True,

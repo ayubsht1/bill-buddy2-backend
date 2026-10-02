@@ -19,6 +19,9 @@ class Expense(models.Model):
     split_type = models.CharField(max_length=10, choices=SplitType.choices, default=SplitType.EQUAL)
     split_data = models.JSONField(default=list, blank=True)
 
+    class Meta:
+        indexes = [models.Index(fields=['group', 'date'], name='expense_group_date_idx')]
+
     def __str__(self):
         return f"{self.description} - ${self.amount}"
     
@@ -26,6 +29,12 @@ class ExpenseShare(models.Model):
     expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="shares")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shares")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['expense', 'user'], name='share_exp_user_idx'),
+            models.Index(fields=['user', 'expense'], name='share_user_exp_idx'),
+        ]
 
     def __str__(self):
         return f"{self.user.email} owes {self.amount} for {self.expense.description}"

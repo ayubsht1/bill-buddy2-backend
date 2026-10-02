@@ -1,9 +1,13 @@
 # serializers.py
 import os
 from rest_framework import serializers
-from .models import CustomUser
+from django.db import models
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from .models import CustomUser, Friendship
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
+
 
 class RegisterSerializer(serializers.ModelSerializer):
     firstName = serializers.CharField(source='first_name', max_length=150)
@@ -37,6 +41,17 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Username already exists.")
         return value
 
+    def validate_password(self, value):
+        candidate = CustomUser(
+            email=self.initial_data.get('email', ''),
+            username=self.initial_data.get('username', '')
+        )
+        try:
+            validate_password(value, candidate)
+        except ValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+        return value
+
     def create(self, validated_data):
         user = CustomUser.objects.create_user(
             username=validated_data['username'],
@@ -47,6 +62,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             is_active=False  # Require email verification
         )
         return user
+
 
 class UserProfileSerializer(serializers.ModelSerializer):
     firstName = serializers.CharField(
@@ -134,6 +150,96 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
         return data
 
+
 class PasswordResetConfirmSerializer(serializers.Serializer):
     token = serializers.CharField()
     new_password = serializers.CharField(min_length=6)
+
+
+class FriendshipSerializer(serializers.ModelSerializer):
+    from_user = serializers.SerializerMethodField()
+    to_user = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Friendship
+        fields = ['id', 'from_user', 'to_user', 'status', 'created_at']
+        read_only_fields = ['id', 'from_user', 'to_user', 'status', 'created_at']
+    
+    def get_from_user(self, obj):
+        return {
+            'id': obj.from_user.id,
+            'username': obj.from_user.username,
+            'email': obj.from_user.email,
+            'first_name': obj.from_user.first_name,
+            'last_name': obj.from_user.last_name,
+            'profile_picture': obj.from_user.profile_picture,
+        }
+    
+    def get_to_user(self, obj):
+        return {
+            'id': obj.to_user.id,
+            'username': obj.to_user.username,
+            'email': obj.to_user.email,
+            'first_name': obj.to_user.first_name,
+            'last_name': obj.to_user.last_name,
+            'profile_picture': obj.to_user.profile_picture,
+        }
+
+
+class FriendRequestSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    
+    def validate_username(self, value):
+        request_user = self.context['request'].user
+        if value.casefold() == request_user.username.casefold():
+            raise serializers.ValidationError("You cannot send a friend request to yourself.")
+        
+        try:
+            target_user = CustomUser.objects.get(username__iexact=value, is_active=True)
+        except CustomUser.DoesNotExist:
+            raise serializers.ValidationError("User not found.")
+        
+        # Check if friendship already exists
+        existing = Friendship.objects.filter(
+            models.Q(from_user=request_user, to_user=target_user) |
+            models.Q(from_user=target_user, to_user=request_user)
+        ).first()
+        
+        if existing:
+            if existing.status == Friendship.Status.ACCEPTED:
+                raise serializers.ValidationError("You are already friends with this user.")
+            elif existing.status == Friendship.Status.PENDING:
+                if existing.from_user == request_user:
+                    raise serializers.ValidationError("Friend request already sent.")
+                else:
+                    raise serializers.ValidationError("This user has already sent you a friend request.")
+        
+        return value
+
+
+class UserSearchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture']
+
+
+class FriendSerializer(serializers.ModelSerializer):
+    """Serializer for displaying friends with balance info"""
+    balance = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'balance', 'status']
+    
+    def get_balance(self, obj):
+        # This will be calculated in the view
+        return self.context.get('balances', {}).get(obj.id, 0)
+    
+    def get_status(self, obj):
+        balance = self.context.get('balances', {}).get(obj.id, 0)
+        if balance > 0:
+            return 'owed'
+        elif balance < 0:
+            return 'owe'
+        return 'settled'
