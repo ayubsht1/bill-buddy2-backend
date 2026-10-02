@@ -44,6 +44,22 @@ used for the optional Redis channel layer.
    console backend by default; configure an SMTP `EMAIL_BACKEND` and the related
    `EMAIL_*` variables when sending real mail.
 
+## Demo data
+
+To populate the configured local database with a repeatable sample account, friends,
+groups, expenses, settlements, and chat history, run:
+
+```powershell
+python manage.py seed_demo_data
+```
+
+Then sign in to the frontend with `demo@example.test` and password
+`BillBuddyDemo123!`. Set `BILLBUDDY_DEMO_PASSWORD` or pass `--password` to choose a
+different password. All demo accounts use that password. The command is disabled
+when `DEBUG` is false unless `--allow-production` is explicitly supplied; do not
+use that option against a database with real user data. Rerunning the command
+updates only the named demo records and does not delete other records.
+
 ## API endpoints
 
 Authenticated endpoints require `Authorization: Bearer <access-token>`.
