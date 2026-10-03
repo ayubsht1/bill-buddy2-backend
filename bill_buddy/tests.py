@@ -102,7 +102,9 @@ class FriendshipApiTests(APITestCase):
                 verified = self.client.post(url, {"id_token": "signed-token"}, format="json")
 
         self.assertEqual(verified.status_code, 200)
-        self.assertTrue(User.objects.get(email="google@example.test").is_active)
+        google_user = User.objects.get(email="google@example.test")
+        self.assertTrue(google_user.is_active)
+        self.assertEqual(verified.data["data"]["user"]["id"], google_user.id)
 
     def test_friend_endpoints_require_authentication(self):
         self.client.force_authenticate(user=None)
