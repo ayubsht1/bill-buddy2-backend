@@ -1,11 +1,21 @@
-from django.contrib.auth import get_user_model
-from django.test import override_settings
-from django.urls import reverse
+import tempfile
+from io import BytesIO
 from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
+from django.core import mail
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+from django.test.client import RequestFactory
+from django.urls import reverse
+from PIL import Image
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Friendship
+from .tasks import send_password_reset_email_task, send_verification_email_task
+from .utils import send_password_reset_email, send_verification_email
 
 
 User = get_user_model()
@@ -43,6 +53,11 @@ class FriendshipApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["id"] for item in response.data["data"]], [self.bob.id])
         self.assertNotIn(inactive.id, [item["id"] for item in response.data["data"]])
+
+        self.client.force_authenticate(self.bob)
+        bob_response = self.client.get(reverse("user-search"), {"q": "bo"})
+        self.assertEqual(bob_response.status_code, 200)
+        self.assertEqual(bob_response.data["data"], [])
 
     def test_send_prevents_self_and_duplicate_requests(self):
         self.assertEqual(self.send_request("alice").status_code, 400)
@@ -127,3 +142,87 @@ class FriendshipApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 401)
+
+
+@override_settings(CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}})
+class ProfilePictureUploadTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="picture@example.test",
+            password="Test-password-123!",
+            username="picture-user",
+            is_active=True,
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_multipart_profile_picture_is_saved_and_returned_as_a_url(self):
+        image = BytesIO()
+        Image.new("RGB", (1, 1)).save(image, format="PNG")
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root, MEDIA_URL="/media/"):
+                response = self.client.patch(
+                    reverse("user-profile"),
+                    {
+                        "pictureFile": SimpleUploadedFile(
+                            "avatar.png", image.getvalue(), content_type="image/png"
+                        )
+                    },
+                    format="multipart",
+                )
+
+                self.assertEqual(response.status_code, 200, response.data)
+                self.user.refresh_from_db()
+                self.assertTrue(self.user.profile_picture.startswith("profile_pics/"))
+                self.assertTrue(default_storage.exists(self.user.profile_picture))
+                self.assertTrue(
+                    response.data["data"]["profilePicture"].startswith(
+                        "http://testserver/media/profile_pics/"
+                    )
+                )
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
+class AccountEmailTaskTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="email@example.test",
+            password="Test-password-123!",
+            username="email-user",
+            first_name="Test",
+            is_active=False,
+        )
+        mail.outbox = []
+
+    def test_verification_and_reset_emails_are_enqueued_after_token_creation(self):
+        request = RequestFactory().get("/api/email-verify/")
+        with patch("bill_buddy.utils.send_verification_email_task.delay") as verification_task:
+            with self.captureOnCommitCallbacks(execute=True):
+                send_verification_email(self.user, request)
+
+        with patch("bill_buddy.utils.send_password_reset_email_task.delay") as reset_task:
+            with self.captureOnCommitCallbacks(execute=True):
+                send_password_reset_email(self.user, request)
+
+        self.assertEqual(verification_task.call_count, 1)
+        self.assertEqual(reset_task.call_count, 1)
+        self.assertEqual(mail.outbox, [])
+
+    def test_account_email_tasks_send_to_the_recipient(self):
+        send_verification_email_task.run(
+            self.user.email,
+            self.user.first_name,
+            "https://api.example.test/api/email-verify/?token=verify-token",
+        )
+        send_password_reset_email_task.run(
+            self.user.email,
+            self.user.first_name,
+            "https://app.example.test/auth/reset-password?token=reset-token",
+        )
+
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertEqual(mail.outbox[0].to, [self.user.email])
+        self.assertIn("verify-token", mail.outbox[0].body)
+        self.assertIn("reset-token", mail.outbox[1].body)

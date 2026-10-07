@@ -76,6 +76,33 @@ TEMPLATES = [
 # WSGI_APPLICATION = 'core.wsgi.application'
 ASGI_APPLICATION = 'core.asgi.application'
 REDIS_URL = config('REDIS_URL', default=None)
+CELERY_BROKER_URL = config(
+    'CELERY_BROKER_URL',
+    default=REDIS_URL or 'redis://127.0.0.1:6379/1',
+)
+CELERY_TASK_ALWAYS_EAGER = config(
+    'CELERY_TASK_ALWAYS_EAGER',
+    default=DEBUG,
+    cast=bool,
+)
+CELERY_TASK_EAGER_PROPAGATES = True
+CELERY_TASK_IGNORE_RESULT = True
+
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+            'KEY_PREFIX': 'bill-buddy',
+        },
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'bill-buddy',
+        },
+    }
 
 if REDIS_URL:
     CHANNEL_LAYERS = {

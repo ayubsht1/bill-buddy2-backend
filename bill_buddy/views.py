@@ -23,6 +23,8 @@ import os
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.core.cache import cache
+from hashlib import sha256
 from decimal import Decimal
 from google.auth.transport.requests import Request as GoogleRequest
 from google.auth.exceptions import GoogleAuthError
@@ -642,16 +644,22 @@ class UserSearchView(APIView):
                 data=[]
             )
         
-        # Exclude current user from search results
-        users = CustomUser.objects.filter(
-            models.Q(username__icontains=query) | models.Q(email__icontains=query)
-        ).filter(is_active=True).exclude(id=request.user.id).order_by('username')[:20]
-        
-        serializer = UserSearchSerializer(users, many=True)
+        cache_key = (
+            f'user-search:{request.user.id}:'
+            f'{sha256(query.encode("utf-8")).hexdigest()}'
+        )
+        data = cache.get(cache_key)
+        if data is None:
+            users = CustomUser.objects.filter(
+                models.Q(username__icontains=query) | models.Q(email__icontains=query)
+            ).filter(is_active=True).exclude(id=request.user.id).order_by('username')[:20]
+            data = UserSearchSerializer(users, many=True).data
+            cache.set(cache_key, data, timeout=30)
+
         return custom_response(
             success=True,
             message="Users found",
-            data=serializer.data
+            data=data
         )
 
 

@@ -1,6 +1,9 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Group, GroupMessage, GroupMembership
+from django.db import transaction
+from .models import Group, GroupMessage, GroupMembership, GroupEvent, GroupEventBudgetItem
 
 User = get_user_model()
 
@@ -100,3 +103,84 @@ class GroupMessageSerializer(serializers.ModelSerializer):
         if instance.is_deleted:
             ret['message'] = "This message was deleted."
         return ret
+
+
+class GroupEventBudgetItemSerializer(serializers.ModelSerializer):
+    amount = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        min_value=Decimal('0.01'),
+    )
+
+    class Meta:
+        model = GroupEventBudgetItem
+        fields = ['id', 'description', 'amount']
+        read_only_fields = ['id']
+
+
+class GroupEventSerializer(serializers.ModelSerializer):
+    budget_items = GroupEventBudgetItemSerializer(many=True, required=False)
+    created_by = serializers.CharField(
+        source='created_by.username',
+        read_only=True,
+        allow_null=True,
+    )
+    planned_budget = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    class Meta:
+        model = GroupEvent
+        fields = [
+            'id',
+            'title',
+            'description',
+            'location',
+            'starts_at',
+            'ends_at',
+            'created_by',
+            'budget_items',
+            'planned_budget',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_by', 'planned_budget', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        starts_at = attrs.get(
+            'starts_at',
+            self.instance.starts_at if self.instance else None,
+        )
+        ends_at = attrs.get(
+            'ends_at',
+            self.instance.ends_at if self.instance else None,
+        )
+        if starts_at and ends_at and ends_at <= starts_at:
+            raise serializers.ValidationError(
+                {'ends_at': 'The event end must be after its start.'}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        budget_items = validated_data.pop('budget_items', [])
+        with transaction.atomic():
+            event = GroupEvent.objects.create(**validated_data)
+            GroupEventBudgetItem.objects.bulk_create([
+                GroupEventBudgetItem(event=event, **item)
+                for item in budget_items
+            ])
+        return event
+
+    def update(self, instance, validated_data):
+        budget_items = validated_data.pop('budget_items', None)
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+            if budget_items is not None:
+                instance.budget_items.all().delete()
+                GroupEventBudgetItem.objects.bulk_create([
+                    GroupEventBudgetItem(event=instance, **item)
+                    for item in budget_items
+                ])
+        return instance

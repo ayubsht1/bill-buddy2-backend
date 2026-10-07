@@ -4,6 +4,7 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from .models import Group, GroupMembership
+from expense.models import Expense
 
 
 User = get_user_model()
@@ -77,3 +78,65 @@ class GroupApiTests(APITestCase):
         second = self.client.post(url, {"join_code": self.group.join_code}, format="json")
         self.assertEqual(second.status_code, 400)
         self.assertEqual(self.group.memberships.filter(user=self.outsider).count(), 1)
+
+    def test_member_can_create_event_with_estimated_costs_without_ledger_expenses(self):
+        self.client.force_authenticate(self.member)
+        response = self.client.post(
+            reverse("group-event-list", args=[self.group.id]),
+            {
+                "title": "Weekend trip",
+                "description": "Plan the shared trip",
+                "location": "Pokhara",
+                "starts_at": "2027-06-01T10:00:00Z",
+                "ends_at": "2027-06-01T18:00:00Z",
+                "budget_items": [
+                    {"description": "Transport", "amount": "120.00"},
+                    {"description": "Accommodation", "amount": "200.00"},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["planned_budget"], "320.00")
+        self.assertEqual(len(response.data["data"]["budget_items"]), 2)
+        self.assertEqual(Expense.objects.filter(group=self.group).count(), 0)
+
+    def test_event_requires_end_after_start(self):
+        self.client.force_authenticate(self.member)
+        response = self.client.post(
+            reverse("group-event-list", args=[self.group.id]),
+            {
+                "title": "Invalid event",
+                "starts_at": "2027-06-01T18:00:00Z",
+                "ends_at": "2027-06-01T18:00:00Z",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.group.events.exists())
+
+    def test_event_reading_and_management_respect_group_permissions(self):
+        self.client.force_authenticate(self.owner)
+        created = self.client.post(
+            reverse("group-event-list", args=[self.group.id]),
+            {
+                "title": "Dinner",
+                "starts_at": "2027-06-01T18:00:00Z",
+                "ends_at": "2027-06-01T20:00:00Z",
+            },
+            format="json",
+        )
+        event_id = created.data["data"]["id"]
+        detail_url = reverse("group-event-detail", args=[self.group.id, event_id])
+
+        self.client.force_authenticate(self.member)
+        self.assertEqual(self.client.patch(detail_url, {"title": "Unauthorized"}).status_code, 403)
+
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(self.client.get(detail_url).status_code, 403)
+
+        self.client.force_authenticate(self.owner)
+        self.assertEqual(self.client.patch(detail_url, {"title": "Team dinner"}).status_code, 200)
+        self.assertEqual(self.client.delete(detail_url).status_code, 200)

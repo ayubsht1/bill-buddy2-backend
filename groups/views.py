@@ -1,12 +1,17 @@
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from rest_framework import status
+from rest_framework import serializers, status
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 
 from bill_buddy.response import custom_response
-from .models import Group, GroupMessage, GroupMembership
-from .serializers import GroupSerializer, GroupMessageSerializer, GroupMembershipSerializer
+from .models import Group, GroupEvent, GroupMessage, GroupMembership
+from .serializers import (
+    GroupEventSerializer,
+    GroupSerializer,
+    GroupMessageSerializer,
+    GroupMembershipSerializer,
+)
 
 # Real-time WebSocket support for the REST post method
 from channels.layers import get_channel_layer
@@ -151,6 +156,152 @@ class GroupDetailView(APIView):
             success=True,
             message=f"Group '{group_name}' and all its associated financial data have been successfully deleted."
         )
+
+
+class GroupEventListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, group_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        events = group.events.select_related('created_by').prefetch_related('budget_items')
+        for parameter, lookup in (
+            ('from', 'starts_at__gte'),
+            ('to', 'starts_at__lte'),
+        ):
+            value = request.query_params.get(parameter)
+            if value:
+                try:
+                    parsed_value = serializers.DateTimeField().run_validation(value)
+                except serializers.ValidationError as exc:
+                    return custom_response(
+                        success=False,
+                        message="Invalid event date filter.",
+                        errors={parameter: exc.detail},
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+                events = events.filter(**{lookup: parsed_value})
+
+        return custom_response(
+            success=True,
+            message="Group events retrieved successfully.",
+            data=GroupEventSerializer(events, many=True).data,
+        )
+
+    def post(self, request, group_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = GroupEventSerializer(data=request.data)
+        if not serializer.is_valid():
+            return custom_response(
+                success=False,
+                message="Validation error.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        event = serializer.save(group=group, created_by=request.user)
+        return custom_response(
+            success=True,
+            message="Group event created successfully.",
+            data=GroupEventSerializer(event).data,
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
+class GroupEventDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _get_event(self, request, group_id, event_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return None, None
+        event = get_object_or_404(
+            GroupEvent.objects.select_related('created_by').prefetch_related('budget_items'),
+            id=event_id,
+            group=group,
+        )
+        return group, event
+
+    def _can_manage(self, request, group, event):
+        return event.created_by_id == request.user.id or group.is_admin(request.user)
+
+    def get(self, request, group_id, event_id):
+        group, event = self._get_event(request, group_id, event_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return custom_response(
+            success=True,
+            message="Group event retrieved successfully.",
+            data=GroupEventSerializer(event).data,
+        )
+
+    def patch(self, request, group_id, event_id):
+        return self._update(request, group_id, event_id, partial=True)
+
+    def put(self, request, group_id, event_id):
+        return self._update(request, group_id, event_id, partial=False)
+
+    def _update(self, request, group_id, event_id, partial):
+        group, event = self._get_event(request, group_id, event_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if not self._can_manage(request, group, event):
+            return custom_response(
+                success=False,
+                message="Only the event creator or a group admin can update this event.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = GroupEventSerializer(event, data=request.data, partial=partial)
+        if not serializer.is_valid():
+            return custom_response(
+                success=False,
+                message="Validation error.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        event = serializer.save()
+        return custom_response(
+            success=True,
+            message="Group event updated successfully.",
+            data=GroupEventSerializer(event).data,
+        )
+
+    def delete(self, request, group_id, event_id):
+        group, event = self._get_event(request, group_id, event_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if not self._can_manage(request, group, event):
+            return custom_response(
+                success=False,
+                message="Only the event creator or a group admin can delete this event.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        event.delete()
+        return custom_response(success=True, message="Group event deleted successfully.")
 
 
 class JoinGroupView(APIView):

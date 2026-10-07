@@ -6,7 +6,6 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from .models import CustomUser, Friendship
 from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -85,6 +84,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     )
     # 📸 Accept multipart file uploads from Next.js (write-only)
     pictureFile = serializers.ImageField(write_only=True, required=False)
+    picture_file = serializers.ImageField(write_only=True, required=False)
 
     class Meta:
         model = CustomUser
@@ -96,6 +96,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'lastName', 
             'profilePicture', 
             'pictureFile', 
+            'picture_file',
             'is_active'
         )
         read_only_fields = ('id', 'email', 'is_active', 'profilePicture')
@@ -114,25 +115,37 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
         return value
 
+    def validate(self, attrs):
+        if 'pictureFile' in attrs and 'picture_file' in attrs:
+            raise serializers.ValidationError(
+                "Upload the profile picture using only one picture-file field."
+            )
+        return attrs
+
     def update(self, instance, validated_data):
         # 1. Handle image file upload if present
         picture_file = validated_data.pop('pictureFile', None)
+        alternate_picture_file = validated_data.pop('picture_file', None)
+        if picture_file is None:
+            picture_file = alternate_picture_file
 
+        old_picture = None
         if picture_file:
-            # Delete old image if it's a local file (not an external Google URL)
-            if instance.profile_picture and not instance.profile_picture.startswith(('http://', 'https://')):
-                if default_storage.exists(instance.profile_picture):
-                    default_storage.delete(instance.profile_picture)
-
             # Save new file with unique path
             ext = os.path.splitext(picture_file.name)[1]
             file_path = f"profile_pics/user_{instance.id}{ext}"
-            saved_path = default_storage.save(file_path, ContentFile(picture_file.read()))
-            
+            saved_path = default_storage.save(file_path, picture_file)
+            old_picture = instance.profile_picture
             instance.profile_picture = saved_path
 
         # 2. Update remaining fields (first_name, last_name, username, etc.)
-        return super().update(instance, validated_data)
+        updated_instance = super().update(instance, validated_data)
+
+        if picture_file and old_picture and not old_picture.startswith(('http://', 'https://')):
+            if default_storage.exists(old_picture):
+                default_storage.delete(old_picture)
+
+        return updated_instance
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
