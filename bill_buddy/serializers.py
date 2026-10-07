@@ -8,6 +8,14 @@ from .models import CustomUser, Friendship
 from django.core.files.storage import default_storage
 
 
+def get_profile_picture_url(request, raw_picture):
+    if not raw_picture or raw_picture.startswith(('http://', 'https://')):
+        return raw_picture
+    if request is None:
+        return raw_picture
+    return request.build_absolute_uri(default_storage.url(raw_picture))
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     firstName = serializers.CharField(source='first_name', max_length=150)
     lastName = serializers.CharField(source='last_name', max_length=150)
@@ -152,14 +160,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         raw_picture = instance.profile_picture
         if raw_picture:
-            # 1. Google OAuth or external URLs
-            if raw_picture.startswith(('http://', 'https://')):
-                data['profilePicture'] = raw_picture
-            # 2. Local uploaded files
-            elif request:
-                # Ensure path starts with leading slash for build_absolute_uri
-                url_path = default_storage.url(raw_picture)
-                data['profilePicture'] = request.build_absolute_uri(url_path)
+            data['profilePicture'] = get_profile_picture_url(request, raw_picture)
 
         return data
 

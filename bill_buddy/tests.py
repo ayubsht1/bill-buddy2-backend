@@ -155,6 +155,24 @@ class ProfilePictureUploadTests(APITestCase):
         )
         self.client.force_authenticate(self.user)
 
+    def test_login_returns_an_absolute_url_for_uploaded_profile_picture(self):
+        self.user.profile_picture = "profile_pics/avatar.png"
+        self.user.set_password("correct-password")
+        self.user.save()
+        self.client.force_authenticate(user=None)
+
+        response = self.client.post(
+            reverse("login"),
+            {"email": self.user.email, "password": "correct-password"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["user"]["profile_picture"],
+            "http://testserver/media/profile_pics/avatar.png",
+        )
+
     def test_multipart_profile_picture_is_saved_and_returned_as_a_url(self):
         image = BytesIO()
         Image.new("RGB", (1, 1)).save(image, format="PNG")

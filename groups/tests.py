@@ -1,7 +1,12 @@
 from django.contrib.auth import get_user_model
+from io import BytesIO
+import tempfile
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.urls import reverse
 from rest_framework.test import APITestCase
+from PIL import Image
 
 from .models import Group, GroupMembership
 from expense.models import Expense
@@ -140,3 +145,69 @@ class GroupApiTests(APITestCase):
         self.client.force_authenticate(self.owner)
         self.assertEqual(self.client.patch(detail_url, {"title": "Team dinner"}).status_code, 200)
         self.assertEqual(self.client.delete(detail_url).status_code, 200)
+
+    def test_group_member_can_send_image_attachment_with_optional_text(self):
+        image = BytesIO()
+        Image.new("RGB", (2, 2), color="green").save(image, format="PNG")
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            self.client.force_authenticate(self.member)
+            response = self.client.post(
+                reverse("group-chat", args=[self.group.id]),
+                {
+                    "message": "Trip photo",
+                    "attachment": SimpleUploadedFile(
+                        "trip.png", image.getvalue(), content_type="image/png"
+                    ),
+                },
+                format="multipart",
+            )
+
+            self.assertEqual(response.status_code, 201, response.data)
+            data = response.data["data"]
+            self.assertEqual(data["message"], "Trip photo")
+            self.assertEqual(data["attachment_name"], "trip.png")
+            self.assertEqual(data["attachment_type"], "image/png")
+            self.assertTrue(data["attachment_url"].startswith("http://testserver/media/group_messages/"))
+            message = self.group.chat_messages.get(id=data["id"])
+            self.assertTrue(message.attachment.storage.exists(message.attachment.name))
+
+            history = self.client.get(reverse("group-chat", args=[self.group.id]))
+            self.assertEqual(history.status_code, 200)
+            self.assertEqual(history.data["data"][0]["attachment_url"], data["attachment_url"])
+
+            deleted = self.client.patch(
+                reverse("group-chat", args=[self.group.id]),
+                {"message_id": data["id"], "action": "delete"},
+                format="json",
+            )
+            self.assertEqual(deleted.status_code, 200)
+            self.assertIsNone(deleted.data["data"]["attachment_url"])
+            self.assertFalse(default_storage.exists(message.attachment.name))
+
+    def test_chat_attachment_rejects_unsupported_and_oversized_files(self):
+        self.client.force_authenticate(self.member)
+        url = reverse("group-chat", args=[self.group.id])
+        unsupported = self.client.post(
+            url,
+            {"attachment": SimpleUploadedFile("script.html", b"<script></script>")},
+            format="multipart",
+        )
+        self.assertEqual(unsupported.status_code, 400)
+
+        oversized = self.client.post(
+            url,
+            {"attachment": SimpleUploadedFile("large.pdf", b"x" * (10 * 1024 * 1024 + 1))},
+            format="multipart",
+        )
+        self.assertEqual(oversized.status_code, 400)
+        self.assertEqual(self.group.chat_messages.count(), 0)
+
+    def test_non_member_cannot_send_chat_attachment(self):
+        self.client.force_authenticate(self.outsider)
+        response = self.client.post(
+            reverse("group-chat", args=[self.group.id]),
+            {"attachment": SimpleUploadedFile("trip.jpg", b"image")},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.group.chat_messages.count(), 0)

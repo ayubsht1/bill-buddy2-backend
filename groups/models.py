@@ -4,6 +4,8 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from django.db.models import F, Q
 from django.core.validators import MinValueValidator
+from pathlib import Path
+import uuid
 
 User = get_user_model()
 
@@ -72,12 +74,20 @@ class GroupMembership(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.group.name} ({self.role})"
 
+
+def group_message_attachment_path(instance, filename):
+    extension = Path(filename).suffix.lower()
+    return f"group_messages/{instance.group_id}/{uuid.uuid4().hex}{extension}"
+
+
 # Add this to groups/models.py
 
 class GroupMessage(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="chat_messages")
     sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="sent_messages")
     message = models.TextField()
+    attachment = models.FileField(upload_to=group_message_attachment_path, blank=True, null=True)
+    attachment_name = models.CharField(max_length=255, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
     # --- 🚀 NEW CHAT FEATURE FIELDS ---

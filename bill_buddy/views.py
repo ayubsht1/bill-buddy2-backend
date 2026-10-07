@@ -7,7 +7,16 @@ from .utils import send_verification_email, send_password_reset_email
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .response import custom_response
-from .serializers import RegisterSerializer, PasswordResetConfirmSerializer, UserProfileSerializer, FriendshipSerializer, FriendRequestSerializer, UserSearchSerializer, FriendSerializer
+from .serializers import (
+    RegisterSerializer,
+    PasswordResetConfirmSerializer,
+    UserProfileSerializer,
+    FriendshipSerializer,
+    FriendRequestSerializer,
+    UserSearchSerializer,
+    FriendSerializer,
+    get_profile_picture_url,
+)
 from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
@@ -166,7 +175,8 @@ class LoginView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "has_password": user.has_usable_password(),
-                    "profile_picture": user.profile_picture if user.profile_picture else None,                }
+                    "profile_picture": get_profile_picture_url(request, user.profile_picture),
+                }
             },
         )
 
@@ -288,7 +298,7 @@ class GoogleLoginView(APIView):
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "profile_picture": user.profile_picture, 
+                    "profile_picture": get_profile_picture_url(request, user.profile_picture),
                     "has_password": user.has_usable_password(),
                 },
             },

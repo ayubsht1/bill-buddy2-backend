@@ -1,4 +1,5 @@
 from decimal import Decimal
+import mimetypes
 
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
@@ -77,14 +78,29 @@ class GroupMessageSerializer(serializers.ModelSerializer):
     is_system = serializers.SerializerMethodField()
     reply_to_id = serializers.IntegerField(source='reply_to.id', read_only=True)
     reply_to_text = serializers.SerializerMethodField()
+    attachment_url = serializers.SerializerMethodField()
+    attachment_type = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMessage
         fields = [
             'id', 'sender_username', 'message', 'timestamp',
             'is_system', 'reply_to_id', 'reply_to_text',
-            'is_forwarded', 'is_pinned', 'is_deleted'
+            'is_forwarded', 'is_pinned', 'is_deleted',
+            'attachment_url', 'attachment_name', 'attachment_type',
         ]
+
+    def get_attachment_url(self, obj):
+        if not obj.attachment or obj.is_deleted:
+            return None
+        request = self.context.get('request')
+        url = obj.attachment.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_attachment_type(self, obj):
+        if not obj.attachment or obj.is_deleted:
+            return None
+        return mimetypes.guess_type(obj.attachment_name)[0] or 'application/octet-stream'
 
     def get_is_system(self, obj):
         return obj.sender is None
