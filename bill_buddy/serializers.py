@@ -179,25 +179,22 @@ class FriendshipSerializer(serializers.ModelSerializer):
         fields = ['id', 'from_user', 'to_user', 'status', 'created_at']
         read_only_fields = ['id', 'from_user', 'to_user', 'status', 'created_at']
     
-    def get_from_user(self, obj):
+    def get_user_data(self, user):
+        request = self.context.get('request')
         return {
-            'id': obj.from_user.id,
-            'username': obj.from_user.username,
-            'email': obj.from_user.email,
-            'first_name': obj.from_user.first_name,
-            'last_name': obj.from_user.last_name,
-            'profile_picture': obj.from_user.profile_picture,
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'profile_picture': get_profile_picture_url(request, user.profile_picture),
         }
+
+    def get_from_user(self, obj):
+        return self.get_user_data(obj.from_user)
     
     def get_to_user(self, obj):
-        return {
-            'id': obj.to_user.id,
-            'username': obj.to_user.username,
-            'email': obj.to_user.email,
-            'first_name': obj.to_user.first_name,
-            'last_name': obj.to_user.last_name,
-            'profile_picture': obj.to_user.profile_picture,
-        }
+        return self.get_user_data(obj.to_user)
 
 
 class FriendRequestSerializer(serializers.Serializer):
@@ -232,15 +229,21 @@ class FriendRequestSerializer(serializers.Serializer):
 
 
 class UserSearchSerializer(serializers.ModelSerializer):
+    profile_picture = serializers.SerializerMethodField()
+
     class Meta:
         model = CustomUser
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture']
+
+    def get_profile_picture(self, obj):
+        return get_profile_picture_url(self.context.get('request'), obj.profile_picture)
 
 
 class FriendSerializer(serializers.ModelSerializer):
     """Serializer for displaying friends with balance info"""
     balance = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    profile_picture = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
@@ -249,7 +252,10 @@ class FriendSerializer(serializers.ModelSerializer):
     def get_balance(self, obj):
         # This will be calculated in the view
         return self.context.get('balances', {}).get(obj.id, 0)
-    
+
+    def get_profile_picture(self, obj):
+        return get_profile_picture_url(self.context.get('request'), obj.profile_picture)
+
     def get_status(self, obj):
         balance = self.context.get('balances', {}).get(obj.id, 0)
         if balance > 0:

@@ -656,6 +656,7 @@ class UserSearchView(APIView):
         
         cache_key = (
             f'user-search:{request.user.id}:'
+            f'{request.scheme}://{request.get_host()}:'
             f'{sha256(query.encode("utf-8")).hexdigest()}'
         )
         data = cache.get(cache_key)
@@ -663,7 +664,7 @@ class UserSearchView(APIView):
             users = CustomUser.objects.filter(
                 models.Q(username__icontains=query) | models.Q(email__icontains=query)
             ).filter(is_active=True).exclude(id=request.user.id).order_by('username')[:20]
-            data = UserSearchSerializer(users, many=True).data
+            data = UserSearchSerializer(users, many=True, context={'request': request}).data
             cache.set(cache_key, data, timeout=30)
 
         return custom_response(
@@ -721,7 +722,7 @@ class SendFriendRequestView(APIView):
         return custom_response(
             success=True,
             message="Friend request sent successfully",
-            data=FriendshipSerializer(friendship).data,
+            data=FriendshipSerializer(friendship, context={'request': request}).data,
             status_code=status.HTTP_201_CREATED
         )
 
@@ -747,8 +748,8 @@ class FriendRequestListView(APIView):
             success=True,
             message="Friend requests retrieved",
             data={
-                'received': FriendshipSerializer(received, many=True).data,
-                'sent': FriendshipSerializer(sent, many=True).data
+                'received': FriendshipSerializer(received, many=True, context={'request': request}).data,
+                'sent': FriendshipSerializer(sent, many=True, context={'request': request}).data
             }
         )
 
@@ -778,7 +779,7 @@ class AcceptFriendRequestView(APIView):
         return custom_response(
             success=True,
             message="Friend request accepted",
-            data=FriendshipSerializer(friendship).data
+            data=FriendshipSerializer(friendship, context={'request': request}).data
         )
 
 
@@ -860,7 +861,11 @@ class FriendListView(APIView):
         # Calculate balances with each friend
         balances = self._calculate_friend_balances(request.user, friend_ids)
         
-        serializer = FriendSerializer(friends, many=True, context={'balances': balances})
+        serializer = FriendSerializer(
+            friends,
+            many=True,
+            context={'balances': balances, 'request': request},
+        )
         
         return custom_response(
             success=True,
@@ -964,7 +969,7 @@ class FriendDetailView(APIView):
         balances = self._calculate_friend_balances(request.user, [friend_id])
         balance = balances.get(friend_id, 0)
         
-        friend_data = UserSearchSerializer(friend).data
+        friend_data = UserSearchSerializer(friend, context={'request': request}).data
         friend_data['balance'] = balance
         friend_data['status'] = 'owed' if balance > 0 else ('owe' if balance < 0 else 'settled')
         friend_data['shared_groups'] = [{'id': g.id, 'name': g.name} for g in shared_groups]

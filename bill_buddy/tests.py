@@ -78,6 +78,45 @@ class FriendshipApiTests(APITestCase):
         listed = self.client.get(reverse("friend-list"))
         self.assertEqual([friend["id"] for friend in listed.data["data"]], [self.alice.id])
 
+    @override_settings(MEDIA_URL="/media/")
+    def test_friend_endpoints_return_absolute_profile_picture_urls(self):
+        self.alice.profile_picture = "profile_pics/alice.png"
+        self.alice.save(update_fields=["profile_picture"])
+        self.bob.profile_picture = "profile_pics/bob.png"
+        self.bob.save(update_fields=["profile_picture"])
+
+        search = self.client.get(reverse("user-search"), {"q": "bob"})
+        self.assertEqual(
+            search.data["data"][0]["profile_picture"],
+            "http://testserver/media/profile_pics/bob.png",
+        )
+
+        pending = self.send_request("bob")
+        self.assertEqual(
+            pending.data["data"]["to_user"]["profile_picture"],
+            "http://testserver/media/profile_pics/bob.png",
+        )
+        requests = self.client.get(reverse("friend-requests"))
+        self.assertEqual(
+            requests.data["data"]["sent"][0]["to_user"]["profile_picture"],
+            "http://testserver/media/profile_pics/bob.png",
+        )
+
+        Friendship.objects.filter(id=pending.data["data"]["id"]).update(
+            status=Friendship.Status.ACCEPTED
+        )
+        listed = self.client.get(reverse("friend-list"))
+        self.assertEqual(
+            listed.data["data"][0]["profile_picture"],
+            "http://testserver/media/profile_pics/bob.png",
+        )
+
+        detail = self.client.get(reverse("friend-detail", args=[self.bob.id]))
+        self.assertEqual(
+            detail.data["data"]["profile_picture"],
+            "http://testserver/media/profile_pics/bob.png",
+        )
+
     def test_sender_can_cancel_and_recipient_can_reject_only(self):
         friendship = Friendship.objects.create(from_user=self.alice, to_user=self.bob)
         reject_by_sender = self.client.post(reverse("reject-friend-request", args=[friendship.id]))
