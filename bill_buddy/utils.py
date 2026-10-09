@@ -1,8 +1,10 @@
-from django.core.mail import send_mail
+from django.db import transaction
 from django.urls import reverse
 from django.conf import settings
+from django.core.mail import send_mail
 from .models import PasswordResetToken, EmailVerificationToken
 from django.core.signing import TimestampSigner
+from .tasks import send_password_reset_email_task, send_verification_email_task
 
 def send_verification_email(user, request):
     signer = TimestampSigner()
@@ -18,20 +20,14 @@ def send_verification_email(user, request):
         reverse('email-verify') + f'?token={token}'
     )
 
-    subject = 'Verify Your Email - Bill Buddy'
-    message = f"""
-    Hi {user.first_name},
-
-    Please verify your email by clicking the link below:
-
-    {verify_url}
-
-    If you did not register, please ignore this email.
-
-    Thanks,
-    Bill Buddy Team
-    """
-    send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
+    transaction.on_commit(
+        lambda: send_verification_email_task.delay(
+            user.email,
+            user.first_name or '',
+            verify_url,
+        ),
+        robust=True,
+    )
 
 
 
@@ -45,26 +41,17 @@ def send_password_reset_email(user, request):
     # Save new token
     PasswordResetToken.objects.create(user=user, token=token)
 
-    # reset_url = request.build_absolute_uri(
-    #     reverse('password-reset-confirm') + f'?token={token}'
-    # )
     reset_url = f"{settings.FRONTEND_URL}/auth/reset-password?token={token}"
 
 
-    subject = 'Reset Your Password - Bill Buddy'
-    message = f"""
-    Hi {user.first_name},
-
-    You requested a password reset. Click the link below to reset your password:
-
-    {reset_url}
-
-    If you didn't request this, please ignore this email.
-
-    Thanks,
-    Bill Buddy Team
-    """
-    send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
+    transaction.on_commit(
+        lambda: send_password_reset_email_task.delay(
+            user.email,
+            user.first_name or '',
+            reset_url,
+        ),
+        robust=True,
+    )
 
 
 def send_settlement_reminder(user_email, group_name, amount_due):

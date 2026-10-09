@@ -7,7 +7,16 @@ from .utils import send_verification_email, send_password_reset_email
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .response import custom_response
-from .serializers import RegisterSerializer, PasswordResetConfirmSerializer, UserProfileSerializer, FriendshipSerializer, FriendRequestSerializer, UserSearchSerializer, FriendSerializer
+from .serializers import (
+    RegisterSerializer,
+    PasswordResetConfirmSerializer,
+    UserProfileSerializer,
+    FriendshipSerializer,
+    FriendRequestSerializer,
+    UserSearchSerializer,
+    FriendSerializer,
+    get_profile_picture_url,
+)
 from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
@@ -23,6 +32,8 @@ import os
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.core.cache import cache
+from hashlib import sha256
 from decimal import Decimal
 from google.auth.transport.requests import Request as GoogleRequest
 from google.auth.exceptions import GoogleAuthError
@@ -164,7 +175,8 @@ class LoginView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "has_password": user.has_usable_password(),
-                    "profile_picture": user.profile_picture if user.profile_picture else None,                }
+                    "profile_picture": get_profile_picture_url(request, user.profile_picture),
+                }
             },
         )
 
@@ -281,11 +293,12 @@ class GoogleLoginView(APIView):
                 "refresh": str(refresh),
                 "access": str(refresh.access_token),
                 "user": {
+                    "id": user.id,
                     "username": user.username,
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
-                    "profile_picture": user.profile_picture, 
+                    "profile_picture": get_profile_picture_url(request, user.profile_picture),
                     "has_password": user.has_usable_password(),
                 },
             },
@@ -641,16 +654,23 @@ class UserSearchView(APIView):
                 data=[]
             )
         
-        # Exclude current user from search results
-        users = CustomUser.objects.filter(
-            models.Q(username__icontains=query) | models.Q(email__icontains=query)
-        ).filter(is_active=True).exclude(id=request.user.id).order_by('username')[:20]
-        
-        serializer = UserSearchSerializer(users, many=True)
+        cache_key = (
+            f'user-search:{request.user.id}:'
+            f'{request.scheme}://{request.get_host()}:'
+            f'{sha256(query.encode("utf-8")).hexdigest()}'
+        )
+        data = cache.get(cache_key)
+        if data is None:
+            users = CustomUser.objects.filter(
+                models.Q(username__icontains=query) | models.Q(email__icontains=query)
+            ).filter(is_active=True).exclude(id=request.user.id).order_by('username')[:20]
+            data = UserSearchSerializer(users, many=True, context={'request': request}).data
+            cache.set(cache_key, data, timeout=30)
+
         return custom_response(
             success=True,
             message="Users found",
-            data=serializer.data
+            data=data
         )
 
 
@@ -702,7 +722,7 @@ class SendFriendRequestView(APIView):
         return custom_response(
             success=True,
             message="Friend request sent successfully",
-            data=FriendshipSerializer(friendship).data,
+            data=FriendshipSerializer(friendship, context={'request': request}).data,
             status_code=status.HTTP_201_CREATED
         )
 
@@ -728,8 +748,8 @@ class FriendRequestListView(APIView):
             success=True,
             message="Friend requests retrieved",
             data={
-                'received': FriendshipSerializer(received, many=True).data,
-                'sent': FriendshipSerializer(sent, many=True).data
+                'received': FriendshipSerializer(received, many=True, context={'request': request}).data,
+                'sent': FriendshipSerializer(sent, many=True, context={'request': request}).data
             }
         )
 
@@ -759,7 +779,7 @@ class AcceptFriendRequestView(APIView):
         return custom_response(
             success=True,
             message="Friend request accepted",
-            data=FriendshipSerializer(friendship).data
+            data=FriendshipSerializer(friendship, context={'request': request}).data
         )
 
 
@@ -841,7 +861,11 @@ class FriendListView(APIView):
         # Calculate balances with each friend
         balances = self._calculate_friend_balances(request.user, friend_ids)
         
-        serializer = FriendSerializer(friends, many=True, context={'balances': balances})
+        serializer = FriendSerializer(
+            friends,
+            many=True,
+            context={'balances': balances, 'request': request},
+        )
         
         return custom_response(
             success=True,
@@ -945,7 +969,7 @@ class FriendDetailView(APIView):
         balances = self._calculate_friend_balances(request.user, [friend_id])
         balance = balances.get(friend_id, 0)
         
-        friend_data = UserSearchSerializer(friend).data
+        friend_data = UserSearchSerializer(friend, context={'request': request}).data
         friend_data['balance'] = balance
         friend_data['status'] = 'owed' if balance > 0 else ('owe' if balance < 0 else 'settled')
         friend_data['shared_groups'] = [{'id': g.id, 'name': g.name} for g in shared_groups]

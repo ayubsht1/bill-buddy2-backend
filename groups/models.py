@@ -2,14 +2,25 @@ from django.conf import settings
 import secrets
 from django.db import models
 from django.contrib.auth import get_user_model
+from django.db.models import F, Q
+from django.core.validators import MinValueValidator
+from pathlib import Path
+import uuid
 
 User = get_user_model()
+
+# Group profile picture upload path
+def group_photo_upload_path(instance, filename):
+    extension = Path(filename).suffix.lower()
+    return f"group_photos/{instance.id}/{uuid.uuid4().hex}{extension}"
 
 # Create your models here.
 
 class Group(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
+    # Group profile picture
+    profile_picture = models.CharField(max_length=500, blank=True, null=True)
     # The creator of the group
     creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_groups")
     # Many-to-many relationship tracking everyone inside the group (through GroupMembership)
@@ -70,12 +81,20 @@ class GroupMembership(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.group.name} ({self.role})"
 
+
+def group_message_attachment_path(instance, filename):
+    extension = Path(filename).suffix.lower()
+    return f"group_messages/{instance.group_id}/{uuid.uuid4().hex}{extension}"
+
+
 # Add this to groups/models.py
 
 class GroupMessage(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="chat_messages")
     sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="sent_messages")
     message = models.TextField()
+    attachment = models.FileField(upload_to=group_message_attachment_path, blank=True, null=True)
+    attachment_name = models.CharField(max_length=255, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
     # --- 🚀 NEW CHAT FEATURE FIELDS ---
@@ -97,4 +116,63 @@ class GroupMessage(models.Model):
             return f"[{self.group.name}] Message deleted"
         sender_name = self.sender.username if self.sender else "SYSTEM"
         return f"[{self.group.name}] {sender_name}: {self.message[:30]}"
+
+
+class GroupEvent(models.Model):
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='events')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_group_events',
+    )
+    title = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    location = models.CharField(max_length=255, blank=True)
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['starts_at', 'id']
+        indexes = [
+            models.Index(fields=['group', 'starts_at'], name='event_group_start_idx'),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(ends_at__gt=F('starts_at')),
+                name='event_end_after_start',
+            ),
+        ]
+
+    @property
+    def planned_budget(self):
+        return sum(
+            (item.amount for item in self.budget_items.all()),
+            start=0,
+        )
+
+    def __str__(self):
+        return f"{self.title} - {self.group.name}"
+
+
+class GroupEventBudgetItem(models.Model):
+    event = models.ForeignKey(
+        GroupEvent,
+        on_delete=models.CASCADE,
+        related_name='budget_items',
+    )
+    description = models.CharField(max_length=120)
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0.01)],
+    )
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return f"{self.description} - {self.amount}"
     

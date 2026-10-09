@@ -6,7 +6,14 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from .models import CustomUser, Friendship
 from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
+
+
+def get_profile_picture_url(request, raw_picture):
+    if not raw_picture or raw_picture.startswith(('http://', 'https://')):
+        return raw_picture
+    if request is None:
+        return raw_picture
+    return request.build_absolute_uri(default_storage.url(raw_picture))
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -85,6 +92,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     )
     # 📸 Accept multipart file uploads from Next.js (write-only)
     pictureFile = serializers.ImageField(write_only=True, required=False)
+    picture_file = serializers.ImageField(write_only=True, required=False)
 
     class Meta:
         model = CustomUser
@@ -96,6 +104,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'lastName', 
             'profilePicture', 
             'pictureFile', 
+            'picture_file',
             'is_active'
         )
         read_only_fields = ('id', 'email', 'is_active', 'profilePicture')
@@ -114,39 +123,44 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
         return value
 
+    def validate(self, attrs):
+        if 'pictureFile' in attrs and 'picture_file' in attrs:
+            raise serializers.ValidationError(
+                "Upload the profile picture using only one picture-file field."
+            )
+        return attrs
+
     def update(self, instance, validated_data):
         # 1. Handle image file upload if present
         picture_file = validated_data.pop('pictureFile', None)
+        alternate_picture_file = validated_data.pop('picture_file', None)
+        if picture_file is None:
+            picture_file = alternate_picture_file
 
+        old_picture = None
         if picture_file:
-            # Delete old image if it's a local file (not an external Google URL)
-            if instance.profile_picture and not instance.profile_picture.startswith(('http://', 'https://')):
-                if default_storage.exists(instance.profile_picture):
-                    default_storage.delete(instance.profile_picture)
-
             # Save new file with unique path
             ext = os.path.splitext(picture_file.name)[1]
             file_path = f"profile_pics/user_{instance.id}{ext}"
-            saved_path = default_storage.save(file_path, ContentFile(picture_file.read()))
-            
+            saved_path = default_storage.save(file_path, picture_file)
+            old_picture = instance.profile_picture
             instance.profile_picture = saved_path
 
         # 2. Update remaining fields (first_name, last_name, username, etc.)
-        return super().update(instance, validated_data)
+        updated_instance = super().update(instance, validated_data)
+
+        if picture_file and old_picture and not old_picture.startswith(('http://', 'https://')):
+            if default_storage.exists(old_picture):
+                default_storage.delete(old_picture)
+
+        return updated_instance
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get('request')
         raw_picture = instance.profile_picture
         if raw_picture:
-            # 1. Google OAuth or external URLs
-            if raw_picture.startswith(('http://', 'https://')):
-                data['profilePicture'] = raw_picture
-            # 2. Local uploaded files
-            elif request:
-                # Ensure path starts with leading slash for build_absolute_uri
-                url_path = default_storage.url(raw_picture)
-                data['profilePicture'] = request.build_absolute_uri(url_path)
+            data['profilePicture'] = get_profile_picture_url(request, raw_picture)
 
         return data
 
@@ -165,25 +179,22 @@ class FriendshipSerializer(serializers.ModelSerializer):
         fields = ['id', 'from_user', 'to_user', 'status', 'created_at']
         read_only_fields = ['id', 'from_user', 'to_user', 'status', 'created_at']
     
-    def get_from_user(self, obj):
+    def get_user_data(self, user):
+        request = self.context.get('request')
         return {
-            'id': obj.from_user.id,
-            'username': obj.from_user.username,
-            'email': obj.from_user.email,
-            'first_name': obj.from_user.first_name,
-            'last_name': obj.from_user.last_name,
-            'profile_picture': obj.from_user.profile_picture,
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'profile_picture': get_profile_picture_url(request, user.profile_picture),
         }
+
+    def get_from_user(self, obj):
+        return self.get_user_data(obj.from_user)
     
     def get_to_user(self, obj):
-        return {
-            'id': obj.to_user.id,
-            'username': obj.to_user.username,
-            'email': obj.to_user.email,
-            'first_name': obj.to_user.first_name,
-            'last_name': obj.to_user.last_name,
-            'profile_picture': obj.to_user.profile_picture,
-        }
+        return self.get_user_data(obj.to_user)
 
 
 class FriendRequestSerializer(serializers.Serializer):
@@ -218,15 +229,21 @@ class FriendRequestSerializer(serializers.Serializer):
 
 
 class UserSearchSerializer(serializers.ModelSerializer):
+    profile_picture = serializers.SerializerMethodField()
+
     class Meta:
         model = CustomUser
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture']
+
+    def get_profile_picture(self, obj):
+        return get_profile_picture_url(self.context.get('request'), obj.profile_picture)
 
 
 class FriendSerializer(serializers.ModelSerializer):
     """Serializer for displaying friends with balance info"""
     balance = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    profile_picture = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
@@ -235,7 +252,10 @@ class FriendSerializer(serializers.ModelSerializer):
     def get_balance(self, obj):
         # This will be calculated in the view
         return self.context.get('balances', {}).get(obj.id, 0)
-    
+
+    def get_profile_picture(self, obj):
+        return get_profile_picture_url(self.context.get('request'), obj.profile_picture)
+
     def get_status(self, obj):
         balance = self.context.get('balances', {}).get(obj.id, 0)
         if balance > 0:

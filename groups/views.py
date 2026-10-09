@@ -1,12 +1,18 @@
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from rest_framework import status
+from rest_framework import serializers, status
+import os
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 
 from bill_buddy.response import custom_response
-from .models import Group, GroupMessage, GroupMembership
-from .serializers import GroupSerializer, GroupMessageSerializer, GroupMembershipSerializer
+from .models import Group, GroupEvent, GroupMessage, GroupMembership
+from .serializers import (
+    GroupEventSerializer,
+    GroupSerializer,
+    GroupMessageSerializer,
+    GroupMembershipSerializer,
+)
 
 # Real-time WebSocket support for the REST post method
 from channels.layers import get_channel_layer
@@ -15,6 +21,14 @@ from expense.utils import group_net_balances
 
 from django.contrib.auth import get_user_model
 User = get_user_model()
+
+MAX_CHAT_ATTACHMENT_SIZE = 10 * 1024 * 1024
+ALLOWED_CHAT_ATTACHMENT_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.webp',
+    '.pdf', '.txt', '.csv', '.doc', '.docx',
+    '.xls', '.xlsx', '.ppt', '.pptx',
+}
+
 
 class GroupListCreateView(APIView):
     permission_classes = [IsAuthenticated]
@@ -153,6 +167,152 @@ class GroupDetailView(APIView):
         )
 
 
+class GroupEventListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, group_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        events = group.events.select_related('created_by').prefetch_related('budget_items')
+        for parameter, lookup in (
+            ('from', 'starts_at__gte'),
+            ('to', 'starts_at__lte'),
+        ):
+            value = request.query_params.get(parameter)
+            if value:
+                try:
+                    parsed_value = serializers.DateTimeField().run_validation(value)
+                except serializers.ValidationError as exc:
+                    return custom_response(
+                        success=False,
+                        message="Invalid event date filter.",
+                        errors={parameter: exc.detail},
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+                events = events.filter(**{lookup: parsed_value})
+
+        return custom_response(
+            success=True,
+            message="Group events retrieved successfully.",
+            data=GroupEventSerializer(events, many=True).data,
+        )
+
+    def post(self, request, group_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = GroupEventSerializer(data=request.data)
+        if not serializer.is_valid():
+            return custom_response(
+                success=False,
+                message="Validation error.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        event = serializer.save(group=group, created_by=request.user)
+        return custom_response(
+            success=True,
+            message="Group event created successfully.",
+            data=GroupEventSerializer(event).data,
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
+class GroupEventDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _get_event(self, request, group_id, event_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return None, None
+        event = get_object_or_404(
+            GroupEvent.objects.select_related('created_by').prefetch_related('budget_items'),
+            id=event_id,
+            group=group,
+        )
+        return group, event
+
+    def _can_manage(self, request, group, event):
+        return event.created_by_id == request.user.id or group.is_admin(request.user)
+
+    def get(self, request, group_id, event_id):
+        group, event = self._get_event(request, group_id, event_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return custom_response(
+            success=True,
+            message="Group event retrieved successfully.",
+            data=GroupEventSerializer(event).data,
+        )
+
+    def patch(self, request, group_id, event_id):
+        return self._update(request, group_id, event_id, partial=True)
+
+    def put(self, request, group_id, event_id):
+        return self._update(request, group_id, event_id, partial=False)
+
+    def _update(self, request, group_id, event_id, partial):
+        group, event = self._get_event(request, group_id, event_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if not self._can_manage(request, group, event):
+            return custom_response(
+                success=False,
+                message="Only the event creator or a group admin can update this event.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = GroupEventSerializer(event, data=request.data, partial=partial)
+        if not serializer.is_valid():
+            return custom_response(
+                success=False,
+                message="Validation error.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        event = serializer.save()
+        return custom_response(
+            success=True,
+            message="Group event updated successfully.",
+            data=GroupEventSerializer(event).data,
+        )
+
+    def delete(self, request, group_id, event_id):
+        group, event = self._get_event(request, group_id, event_id)
+        if group is None:
+            return custom_response(
+                success=False,
+                message="You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if not self._can_manage(request, group, event):
+            return custom_response(
+                success=False,
+                message="Only the event creator or a group admin can delete this event.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        event.delete()
+        return custom_response(success=True, message="Group event deleted successfully.")
+
+
 class JoinGroupView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -224,7 +384,7 @@ class GroupChatView(APIView):
             return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
             
         messages = GroupMessage.objects.filter(group=group).order_by('-timestamp')[:100]
-        serializer = GroupMessageSerializer(reversed(messages), many=True)
+        serializer = GroupMessageSerializer(reversed(messages), many=True, context={'request': request})
         return custom_response(success=True, message="Chat history retrieved.", data=serializer.data)
 
     def post(self, request, group_id):
@@ -233,7 +393,27 @@ class GroupChatView(APIView):
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
             
-        message_text = request.data.get('message', '').strip()
+        message_text = request.data.get('message', '')
+        if not isinstance(message_text, str):
+            return custom_response(success=False, message="Message must be text.", status_code=status.HTTP_400_BAD_REQUEST)
+        message_text = message_text.strip()
+        attachment = request.FILES.get('attachment')
+        if attachment:
+            extension = os.path.splitext(attachment.name)[1].lower()
+            if extension not in ALLOWED_CHAT_ATTACHMENT_EXTENSIONS:
+                return custom_response(
+                    success=False,
+                    message="Choose an image or document file (JPG, PNG, GIF, WebP, PDF, text, CSV, Word, Excel, or PowerPoint).",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            if attachment.size > MAX_CHAT_ATTACHMENT_SIZE:
+                return custom_response(
+                    success=False,
+                    message="Attachments must be 10 MB or smaller.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+        elif 'attachment' in request.data:
+            return custom_response(success=False, message="The attachment upload is invalid.", status_code=status.HTTP_400_BAD_REQUEST)
         reply_id = request.data.get('reply_to_id')
         forward_msg_id = request.data.get('forward_message_id')
 
@@ -248,8 +428,8 @@ class GroupChatView(APIView):
         else:
             is_forwarded = False
 
-        if not message_text and not forward_msg_id:
-            return custom_response(success=False, message="Message content cannot be empty.", status_code=status.HTTP_400_BAD_REQUEST)
+        if not message_text and not forward_msg_id and not attachment:
+            return custom_response(success=False, message="Add a message or attachment before sending.", status_code=status.HTTP_400_BAD_REQUEST)
 
         # 2. Handle Reply verification link
         reply_to_obj = None
@@ -261,14 +441,17 @@ class GroupChatView(APIView):
             group=group,
             sender=request.user,
             message=message_text,
+            attachment=attachment,
+            attachment_name=os.path.basename(attachment.name.replace('\\', '/'))[:255] if attachment else '',
             reply_to=reply_to_obj,
             is_forwarded=is_forwarded
         )
         
         # Real-time WebSocket broadcast trigger configuration
-        self._broadcast_to_sockets(group.id, "chat_message", GroupMessageSerializer(chat_msg).data)
+        serialized_message = GroupMessageSerializer(chat_msg, context={'request': request}).data
+        self._broadcast_to_sockets(group.id, "chat_message", serialized_message)
         
-        return custom_response(success=True, message="Sent.", data=GroupMessageSerializer(chat_msg).data, status_code=status.HTTP_201_CREATED)
+        return custom_response(success=True, message="Sent.", data=serialized_message, status_code=status.HTTP_201_CREATED)
 
     def patch(self, request, group_id):
         """📌 PIN OR 🗑️ SOFT-DELETE a targeted message inside a chat room."""
@@ -288,13 +471,17 @@ class GroupChatView(APIView):
             # Security Rule: Only the sender or group creator can delete a text message
             if msg.sender != request.user and group.creator != request.user:
                 return custom_response(success=False, message="Unauthorized action.", status_code=status.HTTP_403_FORBIDDEN)
+            if msg.attachment:
+                msg.attachment.delete(save=False)
+                msg.attachment = None
+                msg.attachment_name = ''
             msg.is_deleted = True
             msg.save()
         else:
             return custom_response(success=False, message="Invalid action query parameter.", status_code=status.HTTP_400_BAD_REQUEST)
 
         # Notify active clients about the state update via WebSockets
-        serialized_data = GroupMessageSerializer(msg).data
+        serialized_data = GroupMessageSerializer(msg, context={'request': request}).data
         self._broadcast_to_sockets(group.id, "message_update", serialized_data)
 
         return custom_response(success=True, message=f"Message action '{action}' executed successfully.", data=serialized_data)
