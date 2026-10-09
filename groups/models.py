@@ -9,11 +9,18 @@ import uuid
 
 User = get_user_model()
 
+# Group profile picture upload path
+def group_photo_upload_path(instance, filename):
+    extension = Path(filename).suffix.lower()
+    return f"group_photos/{instance.id}/{uuid.uuid4().hex}{extension}"
+
 # Create your models here.
 
 class Group(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
+    # Group profile picture
+    profile_picture = models.CharField(max_length=500, blank=True, null=True)
     # The creator of the group
     creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name="created_groups")
     # Many-to-many relationship tracking everyone inside the group (through GroupMembership)

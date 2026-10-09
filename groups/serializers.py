@@ -4,18 +4,33 @@ import mimetypes
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.core.files.storage import default_storage
 from .models import Group, GroupMessage, GroupMembership, GroupEvent, GroupEventBudgetItem
 
 User = get_user_model()
 
+
+def get_group_photo_url(request, raw_photo):
+    if not raw_photo or raw_photo.startswith(('http://', 'https://')):
+        return raw_photo
+    if request is None:
+        return raw_photo
+    return request.build_absolute_uri(default_storage.url(raw_photo))
+
+
 class GroupMemberSerializer(serializers.ModelSerializer):
     """Provides minimal, clean user detail fields for group listings."""
     role = serializers.SerializerMethodField()
+    profile_picture = serializers.SerializerMethodField()
     
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'role']
     
+    def get_profile_picture(self, obj):
+        request = self.context.get('request')
+        return get_group_photo_url(request, obj.profile_picture)
+
     def get_role(self, obj):
         request = self.context.get('request')
         group = self.context.get('group')
@@ -46,10 +61,16 @@ class GroupSerializer(serializers.ModelSerializer):
     memberships = GroupMembershipSerializer(many=True, read_only=True)
     join_code = serializers.CharField(read_only=True)
     user_role = serializers.SerializerMethodField()
+    group_photo = serializers.SerializerMethodField()
+    group_photo_file = serializers.FileField(write_only=True, required=False)
     
     class Meta:
         model = Group
-        fields = ['id', 'name', 'description', 'creator', 'members', 'memberships', 'join_code', 'created_at', 'user_role']
+        fields = ['id', 'name', 'description', 'creator', 'members', 'memberships', 'join_code', 'created_at', 'user_role', 'group_photo', 'group_photo_file']
+    
+    def get_group_photo(self, obj):
+        request = self.context.get('request')
+        return get_group_photo_url(request, obj.profile_picture)
     
     def get_members(self, obj):
         context = {**self.context, 'group': obj}
@@ -72,6 +93,41 @@ class GroupSerializer(serializers.ModelSerializer):
             )
         return None
 
+    def create(self, validated_data):
+        group_photo_file = validated_data.pop('group_photo_file', None)
+        group = super().create(validated_data)
+        if group_photo_file:
+            import os
+            import uuid
+            ext = os.path.splitext(group_photo_file.name)[1]
+            file_path = f"group_photos/{group.id}/profile{ext}"
+            saved_path = default_storage.save(file_path, group_photo_file)
+            group.profile_picture = saved_path
+            group.save(update_fields=['profile_picture'])
+        return group
+
+    def update(self, instance, validated_data):
+        group_photo_file = validated_data.pop('group_photo_file', None)
+        old_picture = instance.profile_picture
+        
+        instance = super().update(instance, validated_data)
+        
+        if group_photo_file:
+            import os
+            import uuid
+            ext = os.path.splitext(group_photo_file.name)[1]
+            file_path = f"group_photos/{instance.id}/profile_{uuid.uuid4().hex[:8]}{ext}"
+            saved_path = default_storage.save(file_path, group_photo_file)
+            instance.profile_picture = saved_path
+            instance.save(update_fields=['profile_picture'])
+            
+            # Clean up old group photo
+            if old_picture and not old_picture.startswith(('http://', 'https://')):
+                if default_storage.exists(old_picture):
+                    default_storage.delete(old_picture)
+                    
+        return instance
+
 
 class GroupMessageSerializer(serializers.ModelSerializer):
     sender_username = serializers.CharField(source='sender.username', read_only=True)
@@ -80,6 +136,7 @@ class GroupMessageSerializer(serializers.ModelSerializer):
     reply_to_text = serializers.SerializerMethodField()
     attachment_url = serializers.SerializerMethodField()
     attachment_type = serializers.SerializerMethodField()
+    sender_profile_picture = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMessage
@@ -88,6 +145,7 @@ class GroupMessageSerializer(serializers.ModelSerializer):
             'is_system', 'reply_to_id', 'reply_to_text',
             'is_forwarded', 'is_pinned', 'is_deleted',
             'attachment_url', 'attachment_name', 'attachment_type',
+            'sender_profile_picture',
         ]
 
     def get_attachment_url(self, obj):
@@ -111,6 +169,12 @@ class GroupMessageSerializer(serializers.ModelSerializer):
             if obj.reply_to.is_deleted:
                 return "Original message was deleted."
             return obj.reply_to.message[:50]
+        return None
+
+    def get_sender_profile_picture(self, obj):
+        request = self.context.get('request')
+        if obj.sender:
+            return get_group_photo_url(request, obj.sender.profile_picture)
         return None
 
     def to_representation(self, instance):
