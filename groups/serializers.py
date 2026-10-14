@@ -137,12 +137,13 @@ class GroupMessageSerializer(serializers.ModelSerializer):
     attachment_url = serializers.SerializerMethodField()
     attachment_type = serializers.SerializerMethodField()
     sender_profile_picture = serializers.SerializerMethodField()
+    reply_to = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMessage
         fields = [
             'id', 'sender_username', 'message', 'timestamp',
-            'is_system', 'reply_to_id', 'reply_to_text',
+            'is_system', 'reply_to_id', 'reply_to_text','reply_to',
             'is_forwarded', 'is_pinned', 'is_deleted',
             'attachment_url', 'attachment_name', 'attachment_type',
             'sender_profile_picture',
@@ -183,6 +184,25 @@ class GroupMessageSerializer(serializers.ModelSerializer):
         if instance.is_deleted:
             ret['message'] = "This message was deleted."
         return ret
+
+    def get_reply_to(self, obj):
+        if not obj.reply_to:
+            return None
+
+        original = obj.reply_to
+
+        return {
+            'id': original.id,
+            'sender_username': (
+                original.sender.username if original.sender else 'SYSTEM'
+            ),
+            'message': (
+                "This message was deleted."
+                if original.is_deleted
+                else original.message
+            ),
+            'attachment_name': original.attachment_name or None,
+        }
 
 
 class GroupEventBudgetItemSerializer(serializers.ModelSerializer):
