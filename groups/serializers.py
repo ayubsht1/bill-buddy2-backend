@@ -5,7 +5,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.core.files.storage import default_storage
-from .models import Group, GroupMessage, GroupMembership, GroupEvent, GroupEventBudgetItem
+from .models import Group, GroupMessage, GroupMembership, GroupEvent, GroupEventBudgetItem, PersonalMessage
 
 User = get_user_model()
 
@@ -125,7 +125,7 @@ class GroupSerializer(serializers.ModelSerializer):
             if old_picture and not old_picture.startswith(('http://', 'https://')):
                 if default_storage.exists(old_picture):
                     default_storage.delete(old_picture)
-                    
+                
         return instance
 
 
@@ -284,3 +284,41 @@ class GroupEventSerializer(serializers.ModelSerializer):
                     for item in budget_items
                 ])
         return instance
+
+
+class PersonalMessageSerializer(serializers.ModelSerializer):
+    sender_username = serializers.CharField(source='sender.username', read_only=True)
+    receiver_username = serializers.CharField(source='receiver.username', read_only=True)
+    attachment_url = serializers.SerializerMethodField()
+    attachment_type = serializers.SerializerMethodField()
+    is_read = serializers.BooleanField(read_only=True)
+    reply_to_id = serializers.IntegerField(source='reply_to.id', read_only=True, allow_null=True)
+    reply_to_text = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PersonalMessage
+        fields = [
+            'id', 'sender_username', 'receiver_username', 'message', 'timestamp',
+            'is_read', 'attachment_url', 'attachment_name', 'attachment_type',
+            'message_type', 'reply_to_id', 'reply_to_text',
+        ]
+
+    def get_attachment_url(self, obj):
+        if not obj.attachment or obj.is_deleted:
+            return None
+        request = self.context.get('request')
+        url = obj.attachment.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_attachment_type(self, obj):
+        if not obj.attachment or obj.is_deleted:
+            return None
+        return mimetypes.guess_type(obj.attachment_name)[0] or 'application/octet-stream'
+
+    def get_reply_to_text(self, obj):
+        """Returns snippet of original text if this message is a reply."""
+        if obj.reply_to:
+            if obj.reply_to.is_deleted:
+                return "Original message was deleted."
+            return obj.reply_to.message[:50]
+        return None

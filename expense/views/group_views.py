@@ -439,7 +439,7 @@ class DashboardAiInsightsView(APIView):
             )
 
             response = client.models.generate_content(
-                model="gemini-3.5-flash",
+                model="gemini-3.6-flash",
                 contents=f"Analyze this financial context snapshot: {finance_context}",
                 config={"system_instruction": system_prompt, "temperature": 0.7}
             )
