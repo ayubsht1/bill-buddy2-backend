@@ -1,10 +1,11 @@
 # serializers.py
 import os
+import mimetypes
 from rest_framework import serializers
 from django.db import models
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from .models import CustomUser, Friendship
+from .models import CustomUser, Friendship, PersonalMessage
 from django.core.files.storage import default_storage
 
 
@@ -263,3 +264,49 @@ class FriendSerializer(serializers.ModelSerializer):
         elif balance < 0:
             return 'owe'
         return 'settled'
+
+class PersonalMessageSerializer(serializers.ModelSerializer):
+    sender_id = serializers.IntegerField(source='sender.id', read_only=True)
+    receiver_id = serializers.IntegerField(source='receiver.id', read_only=True)
+    sender_username = serializers.CharField(source='sender.username', read_only=True)
+    receiver_username = serializers.CharField(source='receiver.username', read_only=True)
+    attachment_url = serializers.SerializerMethodField()
+    attachment_type = serializers.SerializerMethodField()
+    is_read = serializers.BooleanField(read_only=True)
+    reply_to_id = serializers.IntegerField(source='reply_to.id', read_only=True, allow_null=True)
+    reply_to_text = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PersonalMessage
+        fields = [
+            'id', 'sender_id', 'receiver_id', 'sender_username', 'receiver_username',
+            'message', 'timestamp', 'is_read', 'is_deleted',
+            'attachment_url', 'attachment_name', 'attachment_type',
+            'message_type', 'reply_to_id', 'reply_to_text',
+        ]
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        if obj.is_deleted:
+            data['message'] = ''  # don't leak deleted text
+        return data
+
+    def get_attachment_url(self, obj):
+        if not obj.attachment or obj.is_deleted:
+            return None
+        request = self.context.get('request')
+        url = obj.attachment.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_attachment_type(self, obj):
+        if not obj.attachment or obj.is_deleted:
+            return None
+        return mimetypes.guess_type(obj.attachment_name)[0] or 'application/octet-stream'
+
+    def get_reply_to_text(self, obj):
+        """Returns snippet of original text if this message is a reply."""
+        if obj.reply_to:
+            if obj.reply_to.is_deleted:
+                return "Original message was deleted."
+            return obj.reply_to.message[:50]
+        return None

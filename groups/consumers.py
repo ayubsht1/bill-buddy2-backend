@@ -48,7 +48,7 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
 
         # --- ACTION 1: SEND OR REPLY OR FORWARD ---
         if action == 'send_message':
-            message_text = data.get('message', '').strip()
+            message_text = (data.get('message') or '').strip()
             reply_to_id = data.get('reply_to_id')
             forward_message_id = data.get('forward_message_id')
 

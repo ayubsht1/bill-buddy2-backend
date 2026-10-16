@@ -10,8 +10,6 @@ from .views import (
     RemoveGroupMemberView,
     TransferOwnershipView,
     UpdateMemberRoleView,
-    PersonalMessageListCreateView,
-    PersonalMessageDetailView,
 )
 
 urlpatterns = [
@@ -28,7 +26,5 @@ urlpatterns = [
     path('<int:group_id>/add-member/', AddGroupMemberView.as_view(), name='group-add-member'),
     path('<int:group_id>/members/<int:user_id>/', RemoveGroupMemberView.as_view(), name='group-remove-member'),
     path('<int:group_id>/members/<int:user_id>/role/', UpdateMemberRoleView.as_view(), name='group-update-member-role'),
-    path('personal-messages/', PersonalMessageListCreateView.as_view(), name='personal-messages'),
-    path('personal-messages/<int:message_id>/', PersonalMessageDetailView.as_view(), name='personal-message-detail'),
     path('<int:group_id>/transfer-ownership/', TransferOwnershipView.as_view(), name='group-transfer-ownership'),
 ]
