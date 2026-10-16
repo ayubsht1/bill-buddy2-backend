@@ -2,8 +2,8 @@ from rest_framework.views import APIView
 # from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth import authenticate
-from .models import CustomUser, PasswordResetToken, EmailVerificationToken, Friendship
-from .utils import send_verification_email, send_password_reset_email
+from .models import CustomUser, PasswordResetToken, EmailVerificationToken, Friendship, PersonalMessage
+from .utils import send_verification_email, send_password_reset_email, are_friends, push_event
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .response import custom_response
@@ -16,12 +16,13 @@ from .serializers import (
     UserSearchSerializer,
     FriendSerializer,
     get_profile_picture_url,
+    PersonalMessageSerializer,
 )
 from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 from django.db import IntegrityError, transaction
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponseRedirect
 from django.conf import settings
@@ -42,6 +43,13 @@ from expense.models import Expense, ExpenseShare
 from settlement.models import Settlement
 from groups.models import Group
 User = get_user_model()
+
+MAX_CHAT_ATTACHMENT_SIZE = 10 * 1024 * 1024
+ALLOWED_CHAT_ATTACHMENT_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.webp',
+    '.pdf', '.txt', '.csv', '.doc', '.docx',
+    '.xls', '.xlsx', '.ppt', '.pptx',
+}
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
@@ -1044,3 +1052,149 @@ class FriendDetailView(APIView):
             balances[friend_id] = float(net_balance.quantize(Decimal('0.01')))
         
         return balances
+
+class PersonalMessageListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        friend_id = request.query_params.get('friend_id') or request.query_params.get('user_id')
+
+        if friend_id:
+            friend = get_object_or_404(User, id=friend_id)
+            if not are_friends(user, friend):
+                return custom_response(
+                    success=False,
+                    message="You can only view chats with your friends.",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+            messages = PersonalMessage.objects.filter(
+                Q(sender=user, receiver=friend) | Q(sender=friend, receiver=user)
+            ).select_related('sender', 'receiver', 'reply_to').order_by('timestamp')
+
+            unread_count = PersonalMessage.objects.filter(
+                sender=friend, receiver=user, is_read=False
+            ).update(is_read=True)
+            if unread_count:
+                push_event([friend.id], 'messages_read',
+                           {'reader_id': user.id, 'count': unread_count})
+
+            serializer = PersonalMessageSerializer(messages, many=True, context={'request': request})
+            return custom_response(
+                success=True,
+                message=f"Conversation history with {friend.username} retrieved.",
+                data=serializer.data,
+            )
+
+        base = PersonalMessage.objects.select_related('sender', 'receiver', 'reply_to').order_by('-timestamp')
+        received = PersonalMessageSerializer(base.filter(receiver=user), many=True, context={'request': request})
+        sent = PersonalMessageSerializer(base.filter(sender=user), many=True, context={'request': request})
+        return custom_response(
+            success=True,
+            message="Personal message history retrieved.",
+            data={'received': received.data, 'sent': sent.data},
+        )
+
+    def post(self, request):
+        receiver_id = request.data.get('receiver_id')
+        message_text = request.data.get('message', '')
+        message_text = message_text.strip() if isinstance(message_text, str) else ''
+        attachment = request.FILES.get('attachment')
+        reply_to_id = request.data.get('reply_to_id')
+
+        if not receiver_id:
+            return custom_response(success=False, message="Receiver ID is required.",
+                                   status_code=status.HTTP_400_BAD_REQUEST)
+        if not message_text and not attachment:
+            return custom_response(success=False, message="Add a message or attachment before sending.",
+                                   status_code=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            receiver = User.objects.get(id=receiver_id)
+        except User.DoesNotExist:
+            return custom_response(success=False, message="Receiver not found.",
+                                   status_code=status.HTTP_404_NOT_FOUND)
+
+        if not are_friends(request.user, receiver):
+            return custom_response(success=False, message="You can only message your friends.",
+                                   status_code=status.HTTP_403_FORBIDDEN)
+
+        if attachment:
+            extension = os.path.splitext(attachment.name)[1].lower()
+            if extension not in ALLOWED_CHAT_ATTACHMENT_EXTENSIONS:
+                return custom_response(success=False, message="Unsupported attachment type.",
+                                       status_code=status.HTTP_400_BAD_REQUEST)
+            if attachment.size > MAX_CHAT_ATTACHMENT_SIZE:
+                return custom_response(success=False, message="Attachments must be 10 MB or smaller.",
+                                       status_code=status.HTTP_400_BAD_REQUEST)
+
+        reply_to_obj = None
+        if reply_to_id:
+            # only within this conversation
+            reply_to_obj = PersonalMessage.objects.filter(id=reply_to_id).filter(
+                Q(sender=request.user, receiver=receiver) | Q(sender=receiver, receiver=request.user)
+            ).first()
+
+        msg_type = PersonalMessage.MessageType.ATTACHMENT if attachment else PersonalMessage.MessageType.TEXT
+        if request.data.get('message_type') == PersonalMessage.MessageType.EMOTICON:
+            msg_type = PersonalMessage.MessageType.EMOTICON
+
+        personal_message = PersonalMessage.objects.create(
+            sender=request.user,
+            receiver=receiver,
+            message=message_text,
+            attachment=attachment,
+            attachment_name=os.path.basename(attachment.name.replace('\\', '/'))[:255] if attachment else '',
+            reply_to=reply_to_obj,
+            message_type=msg_type,
+        )
+
+        serializer = PersonalMessageSerializer(personal_message, context={'request': request})
+
+        # NEW: push to both users' sockets (absolute attachment URL because request is in context)
+        push_event([request.user.id, receiver.id], 'chat_message', serializer.data)
+
+        return custom_response(success=True, message="Personal message sent successfully.",
+                               data=serializer.data, status_code=status.HTTP_201_CREATED)
+
+
+class PersonalMessageDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _get_message(self, message_id):
+        return PersonalMessage.objects.select_related('sender', 'receiver', 'reply_to').filter(id=message_id).first()
+
+    def patch(self, request, message_id):
+        """Mark a message as read (receiver only)."""
+        msg = self._get_message(message_id)
+        if not msg:
+            return custom_response(success=False, message="Personal message not found.",
+                                   status_code=status.HTTP_404_NOT_FOUND)
+        if msg.receiver_id != request.user.id:
+            return custom_response(success=False, message="You can only mark your own messages as read.",
+                                   status_code=status.HTTP_403_FORBIDDEN)
+
+        if not msg.is_read:
+            msg.is_read = True
+            msg.save(update_fields=['is_read'])
+            push_event([msg.sender_id], 'messages_read', {'reader_id': request.user.id, 'count': 1})
+
+        serializer = PersonalMessageSerializer(msg, context={'request': request})
+        return custom_response(success=True, message="Message marked as read.", data=serializer.data)
+
+    def delete(self, request, message_id):
+        """Soft-delete a message (sender only)."""
+        msg = self._get_message(message_id)
+        if not msg:
+            return custom_response(success=False, message="Personal message not found.",
+                                   status_code=status.HTTP_404_NOT_FOUND)
+        if msg.sender_id != request.user.id:
+            return custom_response(success=False, message="You can only delete your own messages.",
+                                   status_code=status.HTTP_403_FORBIDDEN)
+
+        msg.is_deleted = True
+        msg.save(update_fields=['is_deleted'])
+        serializer = PersonalMessageSerializer(msg, context={'request': request})
+        push_event([msg.sender_id, msg.receiver_id], 'message_update', serializer.data)
+        return custom_response(success=True, message="Message deleted.", data=serializer.data)

@@ -117,62 +117,6 @@ class GroupMessage(models.Model):
         sender_name = self.sender.username if self.sender else "SYSTEM"
         return f"[{self.group.name}] {sender_name}: {self.message[:30]}"
 
-
-class PersonalMessage(models.Model):
-    """Personal messages between individual friends, not tied to groups or expenses."""
-    
-    class MessageType(models.TextChoices):
-        TEXT = 'text', 'Text'
-        EMOTICON = 'emoticon', 'Emoticon'
-        ATTACHMENT = 'attachment', 'Attachment'
-    
-    sender = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="sent_personal_messages"
-    )
-    receiver = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="received_personal_messages"
-    )
-    message = models.TextField(
-        help_text="The text content of the personal message (no expense features)"
-    )
-    attachment = models.FileField(
-        upload_to="personal_messages/%Y/%m/%d/",
-        blank=True,
-        null=True
-    )
-    attachment_name = models.CharField(max_length=255, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
-    is_read = models.BooleanField(default=False)
-    message_type = models.CharField(
-        max_length=20,
-        choices=MessageType.choices,
-        default=MessageType.TEXT
-    )
-
-    class Meta:
-        ordering = ['-timestamp']
-        indexes = [
-            models.Index(fields=['sender', 'receiver', 'is_read']),
-            models.Index(fields=['receiver', 'is_read']),
-        ]
-
-    # Reply: Self-referencing link to the original target message
-    reply_to = models.ForeignKey(
-        'self',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="replies"
-    )
-
-    def __str__(self):
-        return f"Personal: {self.sender.username} -> {self.receiver.username}: {self.message[:30]}"
-
-
 class GroupEvent(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='events')
     created_by = models.ForeignKey(

@@ -1,18 +1,18 @@
 import os
 from django.core.asgi import get_asgi_application
-from channels.routing import ProtocolTypeRouter, URLRouter
-from channels.auth import AuthMiddlewareStack
-# import chat.routing # Uncomment this once you create your chat routing file
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+django_asgi_app = get_asgi_application()
+
+from channels.routing import ProtocolTypeRouter, URLRouter
+from channels.auth import AuthMiddlewareStack   # or your TokenAuthMiddleware
+
+from groups.routing import websocket_urlpatterns as group_ws
+from bill_buddy.routing import websocket_urlpatterns as personal_ws
+
 application = ProtocolTypeRouter({
-    # Handles normal HTTP requests (Django REST Framework)
-    "http": get_asgi_application(),
-    
-    # Handles WebSocket connections (Next.js real-time chat)
+    "http": django_asgi_app,
     "websocket": AuthMiddlewareStack(
-        URLRouter(
-            [] # Pass an empty list here so Channels doesn't crash
-        )
+        URLRouter(group_ws + personal_ws)
     ),
 })

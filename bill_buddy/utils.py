@@ -2,9 +2,13 @@ from django.db import transaction
 from django.urls import reverse
 from django.conf import settings
 from django.core.mail import send_mail
-from .models import PasswordResetToken, EmailVerificationToken
+from .models import PasswordResetToken, EmailVerificationToken, Friendship
 from django.core.signing import TimestampSigner
 from .tasks import send_password_reset_email_task, send_verification_email_task
+
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from django.db.models import Q
 
 def send_verification_email(user, request):
     signer = TimestampSigner()
@@ -59,67 +63,22 @@ def send_settlement_reminder(user_email, group_name, amount_due):
     message = f"Hi,\n\nYou have a pending settlement of {amount_due} in the group '{group_name}'. Please settle it at your earliest convenience.\n\nThanks!"
     send_mail(subject, message, None, [user_email])
 
+def are_friends(user_a, user_b):
+    return Friendship.objects.filter(
+        Q(from_user=user_a, to_user=user_b) | Q(from_user=user_b, to_user=user_a),
+        status=Friendship.Status.ACCEPTED,
+    ).exists()
 
 
-
-# from django.core.signing import TimestampSigner
-# from django.core.mail import send_mail
-# from django.urls import reverse
-# from django.conf import settings
-# from .models import EmailVerificationToken, PasswordResetToken
+def user_group(user_id):
+    return f"user_{user_id}"
 
 
-# def send_verification_email(user):
-#     signer = TimestampSigner()
-#     token = signer.sign(user.email)
-
-#     # Save token to DB for one-time use
-#     EmailVerificationToken.objects.create(user=user, token=token)
-
-#     # Frontend verification link
-#     FRONTEND_URL = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
-#     verify_url = f"{FRONTEND_URL}/verify-email?token={token}"
-
-#     subject = 'Verify Your Email - Bill Buddy'
-#     message = f"""
-#     Hi {user.first_name},
-
-#     Please verify your email by clicking the link below:
-
-#     {verify_url}
-
-#     If you did not register, please ignore this email.
-
-#     Thanks,  
-#     Bill Buddy Team
-#     """
-
-#     send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
-
-
-# def send_password_reset_email(user):
-#     signer = TimestampSigner()
-#     token = signer.sign(user.email)
-
-#     # Save token to DB for one-time use
-#     PasswordResetToken.objects.create(user=user, token=token)
-
-#     # Frontend reset password link
-#     FRONTEND_URL = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
-#     reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
-
-#     subject = 'Reset Your Password - Bill Buddy'
-#     message = f"""
-#     Hi {user.first_name},
-
-#     You requested a password reset. Click the link below to reset your password:
-
-#     {reset_url}
-
-#     If you didn't request this, please ignore this email.
-
-#     Thanks,  
-#     Bill Buddy Team
-#     """
-
-#     send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
+def push_event(user_ids, event_type, payload):
+    """Sync helper for REST views: push an event to each user's websocket inbox."""
+    layer = get_channel_layer()
+    for uid in set(user_ids):
+        async_to_sync(layer.group_send)(
+            user_group(uid),
+            {'type': 'room_event', 'event_type': event_type, 'data': payload},
+        )

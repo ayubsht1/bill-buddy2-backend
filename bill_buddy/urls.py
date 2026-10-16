@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (RegisterView, LoginView, EmailVerifyView, PasswordResetRequestView, PasswordResetConfirmView,
 ResendVerificationEmailView, LogoutView, GoogleLoginView, TokenRefreshView, UserProfileView, ChangePasswordView, VerifyTokenView,
 UserSearchView, SendFriendRequestView, FriendRequestListView, AcceptFriendRequestView, RejectFriendRequestView,
-CancelFriendRequestView, FriendListView, RemoveFriendView, FriendDetailView)
+CancelFriendRequestView, FriendListView, RemoveFriendView, FriendDetailView, PersonalMessageListCreateView, PersonalMessageDetailView)
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
@@ -28,4 +28,7 @@ urlpatterns = [
     path('friends/', FriendListView.as_view(), name='friend-list'),
     path('friends/<int:friend_id>/', FriendDetailView.as_view(), name='friend-detail'),
     path('friends/<int:friend_id>/remove/', RemoveFriendView.as_view(), name='remove-friend'),
+
+    path('personal-messages/', PersonalMessageListCreateView.as_view(), name='personal-messages'),
+    path('personal-messages/<int:message_id>/', PersonalMessageDetailView.as_view(), name='personal-message-detail'),
 ]
