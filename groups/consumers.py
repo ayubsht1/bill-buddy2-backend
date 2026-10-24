@@ -150,11 +150,12 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
 
         # Modified to handle systems / deleted users gracefully if user is passed as None
         msg = GroupMessage.objects.create(
-            group=group, 
-            sender=user if user and user.is_authenticated else None, 
-            message=text, 
+            group=group,
+            sender=user if user and user.is_authenticated else None,
+            message=text,
             reply_to=reply_to_obj,
-            is_forwarded=is_forwarded
+            is_forwarded=is_forwarded,
+            is_read=False # Default to unread
         )
         return GroupMessageSerializer(msg).data
 

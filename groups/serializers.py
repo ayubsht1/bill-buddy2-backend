@@ -146,7 +146,7 @@ class GroupMessageSerializer(serializers.ModelSerializer):
             'is_system', 'reply_to_id', 'reply_to_text','reply_to',
             'is_forwarded', 'is_pinned', 'is_deleted',
             'attachment_url', 'attachment_name', 'attachment_type',
-            'sender_profile_picture',
+            'sender_profile_picture', 'is_read',
         ]
 
     def get_attachment_url(self, obj):

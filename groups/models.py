@@ -107,6 +107,7 @@ class GroupMessage(models.Model):
     
     # Soft Delete: Keeps database intact but hides the text string copy from users
     is_deleted = models.BooleanField(default=False)
+    is_read = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['timestamp']
