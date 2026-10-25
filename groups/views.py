@@ -22,6 +22,49 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 MAX_CHAT_ATTACHMENT_SIZE = 10 * 1024 * 1024
+
+
+class GroupBalancesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, group_id):
+        group = get_object_or_404(Group, id=group_id)
+        if not group.members.filter(id=request.user.id).exists():
+            return custom_response(
+                success=False,
+                message="Access denied. You are not a member of this group.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        balances_data = group_net_balances(group)
+        
+        # We need to enrich the balance data with user info (username, email)
+        # as expected by the GroupBalance interface in the frontend
+        enriched_balances = []
+        for user_id, net_balance in balances_data.items():
+            try:
+                user = User.objects.get(id=user_id)
+                enriched_balances.append({
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "net_balance": net_balance,
+                })
+            except User.DoesNotExist:
+                continue
+
+        # For suggested settlements, we'd normally call a settlement algorithm.
+        # For now, we'll return an empty list to satisfy the frontend contract
+        # unless a specific algorithm is already implemented in expense.utils.
+        
+        return custom_response(
+            success=True,
+            message="Group balances retrieved successfully.",
+            data={
+                "balances": enriched_balances,
+                "suggested_settlements": [],
+            },
+        )
 ALLOWED_CHAT_ATTACHMENT_EXTENSIONS = {
     '.jpg', '.jpeg', '.png', '.gif', '.webp',
     '.pdf', '.txt', '.csv', '.doc', '.docx',

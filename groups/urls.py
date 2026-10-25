@@ -10,6 +10,7 @@ from .views import (
     RemoveGroupMemberView,
     TransferOwnershipView,
     UpdateMemberRoleView,
+    GroupBalancesView,
 )
 
 urlpatterns = [
@@ -27,4 +28,5 @@ urlpatterns = [
     path('<int:group_id>/members/<int:user_id>/', RemoveGroupMemberView.as_view(), name='group-remove-member'),
     path('<int:group_id>/members/<int:user_id>/role/', UpdateMemberRoleView.as_view(), name='group-update-member-role'),
     path('<int:group_id>/transfer-ownership/', TransferOwnershipView.as_view(), name='group-transfer-ownership'),
+    path('<int:group_id>/balances/', GroupBalancesView.as_view(), name='group-balances'),
 ]
