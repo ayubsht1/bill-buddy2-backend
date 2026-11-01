@@ -4,24 +4,33 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.signing import TimestampSigner
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.test.client import RequestFactory
 from django.urls import reverse
+from django.utils import timezone
+from asgiref.sync import async_to_sync
 from PIL import Image
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Friendship
+from .models import EmailVerificationToken, Friendship, PasswordResetToken
 from .tasks import send_password_reset_email_task, send_verification_email_task
 from .utils import send_password_reset_email, send_verification_email
+from expense.models import PersonalExpense
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+from core.authentication import get_user_from_token
 
 
 User = get_user_model()
 
 
-@override_settings(CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}})
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
 class FriendshipApiTests(APITestCase):
     def setUp(self):
         self.alice = User.objects.create_user(
@@ -29,12 +38,14 @@ class FriendshipApiTests(APITestCase):
             password="StrongPass123!",
             username="alice",
             is_active=True,
+            email_verified_at=timezone.now(),
         )
         self.bob = User.objects.create_user(
             email="bob@example.test",
             password="StrongPass123!",
             username="bob",
             is_active=True,
+            email_verified_at=timezone.now(),
         )
         self.client.force_authenticate(self.alice)
 
@@ -191,6 +202,7 @@ class ProfilePictureUploadTests(APITestCase):
             password="Test-password-123!",
             username="picture-user",
             is_active=True,
+            email_verified_at=timezone.now(),
         )
         self.client.force_authenticate(self.user)
 
@@ -354,3 +366,182 @@ class UserPreferenceApiTests(APITestCase):
             reverse("user-profile"), {"currency": "USD"}, format="json"
         )
         self.assertEqual(response.status_code, 401)
+
+
+@override_settings(CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}})
+class AccountLifecycleApiTests(APITestCase):
+    def create_user(self, email="lifecycle@example.test", **fields):
+        return User.objects.create_user(
+            email=email,
+            password="SecurePassphrase!472",
+            username=email.split("@")[0],
+            **fields,
+        )
+
+    def test_registration_creates_active_unverified_account(self):
+        response = self.client.post(
+            reverse("register"),
+            {
+                "email": "new-account@example.test",
+                "username": "new-account",
+                "firstName": "New",
+                "lastName": "Account",
+                "password": "SecurePassphrase!472",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        user = User.objects.get(email="new-account@example.test")
+        self.assertTrue(user.is_active)
+        self.assertIsNone(user.email_verified_at)
+        self.assertTrue(EmailVerificationToken.objects.filter(user=user, used=False).exists())
+
+    def test_email_verification_records_timestamp_without_changing_activation(self):
+        user = self.create_user(is_active=True)
+        token = TimestampSigner().sign(user.email)
+        verification_token = EmailVerificationToken.objects.create(user=user, token=token)
+
+        response = self.client.get(reverse("email-verify"), {"token": token})
+
+        self.assertEqual(response.status_code, 302)
+        user.refresh_from_db()
+        verification_token.refresh_from_db()
+        self.assertTrue(user.is_active)
+        self.assertIsNotNone(user.email_verified_at)
+        self.assertTrue(verification_token.used)
+
+    def test_login_requires_both_active_account_and_verified_email(self):
+        unverified = self.create_user(email="unverified@example.test", is_active=True)
+        verified = self.create_user(
+            email="verified@example.test",
+            is_active=True,
+            email_verified_at=timezone.now(),
+        )
+        inactive = self.create_user(
+            email="inactive@example.test",
+            is_active=False,
+            email_verified_at=timezone.now(),
+        )
+        login_url = reverse("login")
+
+        unverified_response = self.client.post(
+            login_url,
+            {"email": unverified.email, "password": "SecurePassphrase!472"},
+            format="json",
+        )
+        self.assertEqual(unverified_response.status_code, 401)
+        self.assertFalse(unverified_response.data["data"]["email_verified"])
+
+        verified_response = self.client.post(
+            login_url,
+            {"email": verified.email, "password": "SecurePassphrase!472"},
+            format="json",
+        )
+        self.assertEqual(verified_response.status_code, 200)
+
+        inactive_response = self.client.post(
+            login_url,
+            {"email": inactive.email, "password": "SecurePassphrase!472"},
+            format="json",
+        )
+        self.assertEqual(inactive_response.status_code, 401)
+
+    def test_google_login_does_not_reactivate_deactivated_accounts(self):
+        user = self.create_user(email="disabled-google@example.test", is_active=False)
+        with override_settings(GOOGLE_CLIENT_ID="test-client"):
+            with patch(
+                "bill_buddy.views.google_id_token.verify_oauth2_token",
+                return_value={
+                    "email": user.email,
+                    "email_verified": True,
+                    "given_name": "Disabled",
+                    "family_name": "Account",
+                },
+            ):
+                response = self.client.post(
+                    reverse("social-login"), {"id_token": "signed-token"}, format="json"
+                )
+
+        self.assertEqual(response.status_code, 401)
+        user.refresh_from_db()
+        self.assertFalse(user.is_active)
+        self.assertIsNone(user.email_verified_at)
+
+    def test_unverified_tokens_cannot_access_api_or_websocket_authentication(self):
+        user = self.create_user(is_active=True)
+        refresh = RefreshToken.for_user(user)
+        access = str(refresh.access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        self.assertEqual(self.client.get(reverse("user-profile")).status_code, 401)
+        self.assertTrue(async_to_sync(get_user_from_token)(access).is_anonymous)
+        self.assertEqual(
+            self.client.post(
+                reverse("token-refresh"), {"refresh": str(refresh)}, format="json"
+            ).status_code,
+            401,
+        )
+
+    def test_deletion_disables_account_revokes_tokens_and_preserves_history(self):
+        user = self.create_user(
+            is_active=True,
+            email_verified_at=timezone.now(),
+        )
+        expense = PersonalExpense.objects.create(
+            user=user,
+            transaction_type="INCOME",
+            description="Historical income",
+            amount="120.00",
+            category="SALARY",
+        )
+        reset_token = PasswordResetToken.objects.create(user=user, token="reset-lifecycle-token")
+        verification = EmailVerificationToken.objects.create(
+            user=user, token="verification-lifecycle-token"
+        )
+        refresh = RefreshToken.for_user(user)
+        access = str(refresh.access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        response = self.client.delete(
+            reverse("account-delete"),
+            {"confirmation": "DELETE", "password": "SecurePassphrase!472"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        user.refresh_from_db()
+        self.assertFalse(user.is_active)
+        self.assertIsNotNone(user.deleted_at)
+        self.assertTrue(PersonalExpense.objects.filter(pk=expense.pk).exists())
+        self.assertFalse(PasswordResetToken.objects.filter(pk=reset_token.pk).exists())
+        self.assertFalse(EmailVerificationToken.objects.filter(pk=verification.pk).exists())
+        self.assertTrue(BlacklistedToken.objects.filter(token__jti=refresh["jti"]).exists())
+        self.assertTrue(async_to_sync(get_user_from_token)(access).is_anonymous)
+        self.assertEqual(self.client.get(reverse("user-profile")).status_code, 401)
+        self.assertEqual(
+            self.client.post(
+                reverse("token-refresh"), {"refresh": str(refresh)}, format="json"
+            ).status_code,
+            401,
+        )
+
+    def test_deletion_requires_explicit_confirmation_and_password(self):
+        user = self.create_user(is_active=True, email_verified_at=timezone.now())
+        refresh = RefreshToken.for_user(user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        missing_confirmation = self.client.delete(
+            reverse("account-delete"),
+            {"password": "SecurePassphrase!472"},
+            format="json",
+        )
+        wrong_password = self.client.delete(
+            reverse("account-delete"),
+            {"confirmation": "DELETE", "password": "wrong"},
+            format="json",
+        )
+        self.assertEqual(missing_confirmation.status_code, 400)
+        self.assertEqual(wrong_password.status_code, 400)
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)

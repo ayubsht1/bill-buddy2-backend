@@ -42,6 +42,8 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     first_name = models.CharField(max_length=150, blank=True, null=True)
     last_name = models.CharField(max_length=150, blank=True, null=True)
     profile_picture = models.CharField(max_length=500, blank=True, null=True)
+    email_verified_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='NPR')
     language = models.CharField(max_length=5, choices=[('en', 'English'), ('ne', 'नेपाली')], default='en')
     timezone = models.CharField(max_length=64, default='Asia/Kathmandu')
@@ -60,7 +62,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         verbose_name='user permissions',
     )
 
-    is_active = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
 

@@ -9,6 +9,10 @@ class EmailBackend(ModelBackend):
         except CustomUser.DoesNotExist:
             return None
         
-        if user.check_password(password) and self.user_can_authenticate(user):
+        if (
+            user.check_password(password)
+            and self.user_can_authenticate(user)
+            and user.email_verified_at is not None
+        ):
             return user
         return None

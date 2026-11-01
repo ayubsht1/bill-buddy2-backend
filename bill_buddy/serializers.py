@@ -69,7 +69,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             first_name=validated_data['first_name'],
             last_name=validated_data['last_name'],
-            is_active=False  # Require email verification
+            is_active=True
         )
         return user
 
@@ -109,6 +109,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'firstName', 
             'lastName', 
             'profilePicture', 
+            'email_verified_at',
             'currency',
             'language',
             'timezone',
@@ -116,7 +117,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'picture_file',
             'is_active'
         )
-        read_only_fields = ('id', 'email', 'is_active', 'profilePicture')
+        read_only_fields = (
+            'id', 'email', 'is_active', 'email_verified_at', 'profilePicture'
+        )
 
     # 🔒 UNIQUE USERNAME VALIDATOR
     def validate_username(self, value):
@@ -224,7 +227,11 @@ class FriendRequestSerializer(serializers.Serializer):
             raise serializers.ValidationError("You cannot send a friend request to yourself.")
         
         try:
-            target_user = CustomUser.objects.get(username__iexact=value, is_active=True)
+            target_user = CustomUser.objects.get(
+                username__iexact=value,
+                is_active=True,
+                email_verified_at__isnull=False,
+            )
         except CustomUser.DoesNotExist:
             raise serializers.ValidationError("User not found.")
         

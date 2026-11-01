@@ -5,8 +5,21 @@ from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import AccessToken
+
+
+class EmailVerifiedJWTAuthentication(JWTAuthentication):
+    def get_user(self, validated_token):
+        user = super().get_user(validated_token)
+        if user.email_verified_at is None:
+            raise AuthenticationFailed(
+                "Email address is not verified.",
+                code="email_not_verified",
+            )
+        return user
 
 
 @database_sync_to_async
@@ -18,7 +31,7 @@ def get_user_from_token(token):
         User = get_user_model()
         user = User.objects.get(pk=user_id)
 
-        if not user.is_active:
+        if not user.is_active or user.email_verified_at is None:
             return AnonymousUser()
 
         return user
