@@ -20,11 +20,31 @@ class CustomUserManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
+    CURRENCY_CHOICES = [
+        ('NPR', 'Nepalese Rupee'),
+        ('USD', 'US Dollar'),
+        ('EUR', 'Euro'),
+        ('GBP', 'British Pound'),
+        ('INR', 'Indian Rupee'),
+        ('JPY', 'Japanese Yen'),
+        ('AUD', 'Australian Dollar'),
+        ('CAD', 'Canadian Dollar'),
+        ('CHF', 'Swiss Franc'),
+        ('CNY', 'Chinese Yuan'),
+        ('SGD', 'Singapore Dollar'),
+        ('AED', 'UAE Dirham'),
+        ('BDT', 'Bangladeshi Taka'),
+        ('PKR', 'Pakistani Rupee'),
+    ]
+
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True)
     first_name = models.CharField(max_length=150, blank=True, null=True)
     last_name = models.CharField(max_length=150, blank=True, null=True)
     profile_picture = models.CharField(max_length=500, blank=True, null=True)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='NPR')
+    language = models.CharField(max_length=5, choices=[('en', 'English'), ('ne', 'नेपाली')], default='en')
+    timezone = models.CharField(max_length=64, default='Asia/Kathmandu')
     groups = models.ManyToManyField(
         'groups.Group',
         related_name='customuser_set',

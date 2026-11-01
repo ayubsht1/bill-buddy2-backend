@@ -283,3 +283,74 @@ class AccountEmailTaskTests(APITestCase):
         self.assertEqual(mail.outbox[0].to, [self.user.email])
         self.assertIn("verify-token", mail.outbox[0].body)
         self.assertIn("reset-token", mail.outbox[1].body)
+
+
+class UserPreferenceApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="preferences@example.test",
+            password="SecurePass123!",
+            username="preferences-user",
+            is_active=True,
+        )
+        self.other_user = User.objects.create_user(
+            email="other-preferences@example.test",
+            password="SecurePass123!",
+            username="other-preferences-user",
+            is_active=True,
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_profile_returns_defaults_and_persists_preference_updates(self):
+        profile_url = reverse("user-profile")
+        initial = self.client.get(profile_url)
+        self.assertEqual(initial.status_code, 200)
+        self.assertEqual(initial.data["data"]["currency"], "NPR")
+        self.assertEqual(initial.data["data"]["language"], "en")
+        self.assertEqual(initial.data["data"]["timezone"], "Asia/Kathmandu")
+
+        updated = self.client.patch(
+            profile_url,
+            {"currency": "USD", "language": "ne", "timezone": "America/New_York"},
+            format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.data["data"]["currency"], "USD")
+        self.assertEqual(updated.data["data"]["language"], "ne")
+        self.assertEqual(updated.data["data"]["timezone"], "America/New_York")
+
+        self.user.refresh_from_db()
+        self.other_user.refresh_from_db()
+        self.assertEqual(
+            (self.user.currency, self.user.language, self.user.timezone),
+            ("USD", "ne", "America/New_York"),
+        )
+        self.assertEqual(
+            (self.other_user.currency, self.other_user.language, self.other_user.timezone),
+            ("NPR", "en", "Asia/Kathmandu"),
+        )
+
+    def test_profile_rejects_invalid_currency_language_and_timezone(self):
+        profile_url = reverse("user-profile")
+        for field, value in (
+            ("currency", "XXX"),
+            ("language", "fr"),
+            ("timezone", "Mars/Olympus"),
+        ):
+            with self.subTest(field=field):
+                response = self.client.patch(profile_url, {field: value}, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(field, response.data["errors"])
+
+        self.user.refresh_from_db()
+        self.assertEqual(
+            (self.user.currency, self.user.language, self.user.timezone),
+            ("NPR", "en", "Asia/Kathmandu"),
+        )
+
+    def test_profile_preferences_require_authentication(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.patch(
+            reverse("user-profile"), {"currency": "USD"}, format="json"
+        )
+        self.assertEqual(response.status_code, 401)

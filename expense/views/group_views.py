@@ -1,4 +1,5 @@
 import os
+from zoneinfo import ZoneInfo
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
@@ -324,7 +325,7 @@ class DashboardAnalyticsView(APIView):
         personal_qs = PersonalExpense.objects.filter(user=user)
         
         # 🗓️ GET CURRENT YEAR AND MONTH FOR FILTERING CARDS/PIE CHARTS
-        today = timezone.now().date()
+        today = timezone.localtime(timezone.now(), ZoneInfo(request.user.timezone)).date()
         current_month_qs = personal_qs.filter(date__year=today.year, date__month=today.month)
 
         # 🛍️ 2. PERSONAL EXPENSE BREAKDOWN (Locked to current month for accurate Pie/Donut breakdown)
@@ -404,7 +405,7 @@ class DashboardAiInsightsView(APIView):
         personal_qs = PersonalExpense.objects.filter(user=user)
         
         # 🗓️ LOCK AI TO CURRENT CALENDAR MONTH DATA ONLY
-        today = timezone.now().date()
+        today = timezone.localtime(timezone.now(), ZoneInfo(request.user.timezone)).date()
         current_month_qs = personal_qs.filter(date__year=today.year, date__month=today.month)
         
         total_personal_income = current_month_qs.filter(transaction_type='INCOME').aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
