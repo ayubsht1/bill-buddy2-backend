@@ -2,7 +2,8 @@ from django.urls import path
 from .views import (RegisterView, LoginView, EmailVerifyView, PasswordResetRequestView, PasswordResetConfirmView,
 ResendVerificationEmailView, LogoutView, GoogleLoginView, TokenRefreshView, UserProfileView, ChangePasswordView, VerifyTokenView,
 UserSearchView, SendFriendRequestView, FriendRequestListView, AcceptFriendRequestView, RejectFriendRequestView,
-CancelFriendRequestView, FriendListView, RemoveFriendView, FriendDetailView, PersonalMessageListCreateView, PersonalMessageDetailView)
+CancelFriendRequestView, FriendListView, RemoveFriendView, FriendDetailView, PersonalMessageListCreateView,
+PersonalMessageDetailView, AccountDeletionView)
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
@@ -11,6 +12,7 @@ urlpatterns = [
     path('password-reset/', PasswordResetRequestView.as_view(), name='password-reset'),
     path('reset-password/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('profile/', UserProfileView.as_view(), name='user-profile'),
+    path('account/delete/', AccountDeletionView.as_view(), name='account-delete'),
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('resend-verification/', ResendVerificationEmailView.as_view(), name='resend-verification'),
     path('logout/', LogoutView.as_view(), name='logout'),

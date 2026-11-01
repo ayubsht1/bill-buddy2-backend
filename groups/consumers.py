@@ -1,6 +1,7 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from .models import Group, GroupMessage
 from .serializers import GroupMessageSerializer  # Import your serializer here!
@@ -22,6 +23,12 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4403)
             return
 
+        self.user_inbox = f"user_{self.user.id}"
+        await self.channel_layer.group_add(self.user_inbox, self.channel_name)
+        if not await self.account_is_active(self.user.id):
+            await self.close(code=4401)
+            return
+
         # 3. Join the broadcast room group layer
         await self.channel_layer.group_add(
             self.room_group_name,
@@ -36,9 +43,15 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
                 self.room_group_name,
                 self.channel_name
             )
+        if hasattr(self, 'user_inbox'):
+            await self.channel_layer.group_discard(self.user_inbox, self.channel_name)
 
     async def receive(self, text_data):
         """Receives structured commands from a client socket."""
+        if not await self.account_is_active(self.user.id):
+            await self.close(code=4401)
+            return
+
         try:
             data = json.loads(text_data)
         except json.JSONDecodeError:
@@ -118,17 +131,37 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
 
     async def room_event(self, event):
         """Unified transmitter for all structured room data events down to client devices."""
+        if not await self.account_is_active(self.user.id):
+            await self.close(code=4401)
+            return
         await self.send(text_data=json.dumps({
             'event_type': event['event_type'],
             'payload': event['data']
         }))
 
+    async def account_deactivated(self, event):
+        await self.close(code=4401)
 
     # --- 🛠️ Async Database Layer Helpers ---
 
     @database_sync_to_async
+    def account_is_active(self, user_id):
+        return get_user_model().objects.filter(
+            pk=user_id,
+            is_active=True,
+            email_verified_at__isnull=False,
+        ).exists()
+
+    @database_sync_to_async
     def check_membership(self, group_id, user):
-        return Group.objects.filter(id=group_id, members=user).exists()
+        return (
+            get_user_model().objects.filter(
+                pk=user.pk,
+                is_active=True,
+                email_verified_at__isnull=False,
+            ).exists()
+            and Group.objects.filter(id=group_id, members=user).exists()
+        )
 
     @database_sync_to_async
     def get_forward_text(self, message_id, user):

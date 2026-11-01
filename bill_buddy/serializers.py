@@ -1,6 +1,8 @@
 # serializers.py
 import os
 import mimetypes
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import available_timezones
 from rest_framework import serializers
 from django.db import models
 from django.contrib.auth.password_validation import validate_password
@@ -67,7 +69,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             first_name=validated_data['first_name'],
             last_name=validated_data['last_name'],
-            is_active=False  # Require email verification
+            is_active=True
         )
         return user
 
@@ -94,6 +96,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
     # 📸 Accept multipart file uploads from Next.js (write-only)
     pictureFile = serializers.ImageField(write_only=True, required=False)
     picture_file = serializers.ImageField(write_only=True, required=False)
+    currency = serializers.ChoiceField(choices=CustomUser.CURRENCY_CHOICES, required=False)
+    language = serializers.ChoiceField(choices=[('en', 'English'), ('ne', 'नेपाली')], required=False)
+    timezone = serializers.CharField(max_length=64, required=False)
 
     class Meta:
         model = CustomUser
@@ -104,11 +109,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'firstName', 
             'lastName', 
             'profilePicture', 
+            'email_verified_at',
+            'currency',
+            'language',
+            'timezone',
             'pictureFile', 
             'picture_file',
             'is_active'
         )
-        read_only_fields = ('id', 'email', 'is_active', 'profilePicture')
+        read_only_fields = (
+            'id', 'email', 'is_active', 'email_verified_at', 'profilePicture'
+        )
 
     # 🔒 UNIQUE USERNAME VALIDATOR
     def validate_username(self, value):
@@ -122,6 +133,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if existing_user.exists():
             raise serializers.ValidationError("A user with that username already exists.")
 
+        return value
+
+    def validate_timezone(self, value):
+        if value not in available_timezones():
+            raise serializers.ValidationError("Use a valid IANA timezone identifier.")
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise serializers.ValidationError("Use a valid IANA timezone identifier.")
         return value
 
     def validate(self, attrs):
@@ -207,7 +227,11 @@ class FriendRequestSerializer(serializers.Serializer):
             raise serializers.ValidationError("You cannot send a friend request to yourself.")
         
         try:
-            target_user = CustomUser.objects.get(username__iexact=value, is_active=True)
+            target_user = CustomUser.objects.get(
+                username__iexact=value,
+                is_active=True,
+                email_verified_at__isnull=False,
+            )
         except CustomUser.DoesNotExist:
             raise serializers.ValidationError("User not found.")
         

@@ -166,6 +166,7 @@ class Command(BaseCommand):
             user.first_name = first_name
             user.last_name = last_name
             user.is_active = True
+            user.email_verified_at = user.email_verified_at or timezone.now()
             user.set_password(password)
             user.save()
             users[email] = user

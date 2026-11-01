@@ -28,6 +28,9 @@ class PersonalChatConsumer(AsyncWebsocketConsumer):
 
         self.inbox = inbox_group(self.user.id)
         await self.channel_layer.group_add(self.inbox, self.channel_name)
+        if not await self.account_is_active(self.user.id):
+            await self.close(code=4401)
+            return
         await self.accept()
 
     async def disconnect(self, close_code):
@@ -35,6 +38,10 @@ class PersonalChatConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.inbox, self.channel_name)
 
     async def receive(self, text_data):
+        if not await self.account_is_active(self.user.id):
+            await self.close(code=4401)
+            return
+
         try:
             data = json.loads(text_data)
         except json.JSONDecodeError:
@@ -100,12 +107,26 @@ class PersonalChatConsumer(AsyncWebsocketConsumer):
             )
 
     async def room_event(self, event):
+        if not await self.account_is_active(self.user.id):
+            await self.close(code=4401)
+            return
         await self.send(text_data=json.dumps({
             'event_type': event['event_type'],
             'payload': event['data'],
         }))
 
+    async def account_deactivated(self, event):
+        await self.close(code=4401)
+
     # --- DB helpers ---
+
+    @database_sync_to_async
+    def account_is_active(self, user_id):
+        return User.objects.filter(
+            pk=user_id,
+            is_active=True,
+            email_verified_at__isnull=False,
+        ).exists()
 
     @database_sync_to_async
     def save_message(self, user, receiver_id, text, reply_to_id, message_type):

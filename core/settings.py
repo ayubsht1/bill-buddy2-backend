@@ -135,7 +135,7 @@ DATABASES = {
 
 # Custom user model
 AUTH_USER_MODEL = 'bill_buddy.CustomUser'
-AUTHENTICATION_BACKENDS = ['bill_buddy.backends.EmailBackend','django.contrib.auth.backends.AllowAllUsersModelBackend']
+AUTHENTICATION_BACKENDS = ['bill_buddy.backends.EmailBackend']
 
 
 # JWT Authentication settings
@@ -154,7 +154,7 @@ SIMPLE_JWT = {
 # REST Framework config
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'core.authentication.EmailVerifiedJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',

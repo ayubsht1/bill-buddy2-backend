@@ -21,6 +21,7 @@ from .serializers import (
 from django.core.signing import TimestampSigner, SignatureExpired, BadSignature
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
+from django.utils import timezone
 from django.db import IntegrityError, transaction
 from django.db.models import Sum, Q
 from django.shortcuts import get_object_or_404
@@ -36,13 +37,18 @@ from django.db import models
 from django.core.cache import cache
 from hashlib import sha256
 from decimal import Decimal
+import logging
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from google.auth.transport.requests import Request as GoogleRequest
 from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import id_token as google_id_token
 from expense.models import Expense, ExpenseShare
 from settlement.models import Settlement
 from groups.models import Group
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 MAX_CHAT_ATTACHMENT_SIZE = 10 * 1024 * 1024
 ALLOWED_CHAT_ATTACHMENT_EXTENSIONS = {
@@ -124,14 +130,17 @@ class EmailVerifyView(APIView):
         if user.email != email:
             return custom_response(success=False, message="Token does not match user.")
 
-        if user.is_active:
-            return custom_response(success=True, message="Account already activated.")
+        if not user.is_active:
+            return custom_response(
+                success=False,
+                message="This account is unavailable.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
 
-        user.is_active = True
-        user.save()
-
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=['email_verified_at'])
         verification_token.used = True
-        verification_token.save()
+        verification_token.save(update_fields=['used'])
 
         return HttpResponseRedirect(f"{settings.FRONTEND_URL}/auth/emailVerified")
 
@@ -152,20 +161,20 @@ class LoginView(APIView):
         user = authenticate(request, email=email, password=password)
 
         if user is None:
+            unverified_user = CustomUser.objects.filter(
+                email=email, is_active=True, email_verified_at__isnull=True
+            ).first()
+            if unverified_user and unverified_user.check_password(password):
+                return custom_response(
+                    success=False,
+                    message="Please verify your email before signing in.",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    data={"email_verified": False},
+                )
             return custom_response(
                 success=False,
                 message="Invalid credentials",
                 status_code=status.HTTP_401_UNAUTHORIZED
-            )
-
-        if not user.is_active:
-            return custom_response(
-                success=False,
-                message="Account not activated. Please verify your email.",
-                 status_code=status.HTTP_401_UNAUTHORIZED,
-                data={
-                "is_active": user.is_active
-            }
             )
 
         refresh = RefreshToken.for_user(user)
@@ -250,6 +259,12 @@ class GoogleLoginView(APIView):
                 user_qs = User.objects.filter(email=email)
                 if user_qs.exists():
                     user = user_qs.get()
+                    if not user.is_active:
+                        return custom_response(
+                            success=False,
+                            message="This account is unavailable.",
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                        )
                     created = False
                     
                     # 🌟 If names are missing on an existing profile, catch them up
@@ -263,9 +278,9 @@ class GoogleLoginView(APIView):
                     if not user.last_name and last_name:
                         user.last_name = last_name
                         updated_fields.append('last_name')
-                    if not user.is_active:
-                        user.is_active = True
-                        updated_fields.append('is_active')
+                    if user.email_verified_at is None:
+                        user.email_verified_at = timezone.now()
+                        updated_fields.append('email_verified_at')
                         
                     if updated_fields:
                         user.save(update_fields=updated_fields)
@@ -278,6 +293,7 @@ class GoogleLoginView(APIView):
                         last_name=last_name,    # 🌟 Automatically save Google's last name
                         profile_picture=picture_url,
                         is_active=True,
+                        email_verified_at=timezone.now(),
                     )
                     user.set_unusable_password()
                     user.save()
@@ -432,7 +448,7 @@ class PasswordResetRequestView(APIView):
                 status_code=status.HTTP_400_BAD_REQUEST
             )
         try:
-            user = CustomUser.objects.get(email=email)
+            user = CustomUser.objects.get(email=email, is_active=True)
         except CustomUser.DoesNotExist:
             return custom_response(
                 success=True,
@@ -472,6 +488,8 @@ class PasswordResetConfirmView(APIView):
                 return custom_response(success=False, message="Token expired", status_code=400)
 
             user = reset_token.user
+            if not user.is_active:
+                return custom_response(success=False, message="Invalid token", status_code=400)
             try:
                 validate_password(new_password, user)
             except ValidationError as exc:
@@ -502,11 +520,11 @@ class ResendVerificationEmailView(APIView):
             )
 
         try:
-            user = CustomUser.objects.get(email=email)
+            user = CustomUser.objects.get(email=email, is_active=True)
         except CustomUser.DoesNotExist:
             return custom_response(success=True, message="If the account needs verification, an email will be sent.")
 
-        if user.is_active:
+        if user.email_verified_at is not None:
             return custom_response(success=True, message="If the account needs verification, an email will be sent.")
 
         send_verification_email(user, request)
@@ -550,6 +568,57 @@ class LogoutView(APIView):
                 status_code=status.HTTP_400_BAD_REQUEST
             )
 
+class AccountDeletionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        if request.data.get("confirmation") != "DELETE":
+            return custom_response(
+                success=False,
+                message='Type "DELETE" to confirm account deletion.',
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            user = CustomUser.objects.select_for_update().get(pk=request.user.pk)
+            if not user.is_active:
+                return custom_response(
+                    success=False,
+                    message="This account is unavailable.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+            if user.has_usable_password() and not user.check_password(
+                request.data.get("password", "")
+            ):
+                return custom_response(
+                    success=False,
+                    message="The password is incorrect.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            user.is_active = False
+            user.deleted_at = timezone.now()
+            user.save(update_fields=["is_active", "deleted_at"])
+
+            for outstanding_token in OutstandingToken.objects.filter(user=user):
+                BlacklistedToken.objects.get_or_create(token=outstanding_token)
+            EmailVerificationToken.objects.filter(user=user).delete()
+            PasswordResetToken.objects.filter(user=user).delete()
+
+        channel_layer = get_channel_layer()
+        if channel_layer is not None:
+            try:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user.pk}", {"type": "account_deactivated"}
+                )
+            except Exception:
+                logger.exception("Could not close the deleted user's WebSocket connections.")
+
+        return custom_response(
+            success=True,
+            message="Account deleted successfully.",
+        )
+
 class TokenRefreshView(APIView):
     """
     Takes a valid refresh type JSON web token and returns a fresh, 
@@ -571,7 +640,9 @@ class TokenRefreshView(APIView):
             # Load and validate the provided refresh token token string
             refresh = RefreshToken(refresh_token)
             if not User.objects.filter(
-                id=refresh.get("user_id"), is_active=True
+                id=refresh.get("user_id"),
+                is_active=True,
+                email_verified_at__isnull=False,
             ).exists():
                 return custom_response(
                     success=False,
@@ -622,7 +693,9 @@ class VerifyTokenView(APIView):
         try:
             access_token = AccessToken(token_str)
             if not User.objects.filter(
-                id=access_token.get("user_id"), is_active=True
+                id=access_token.get("user_id"),
+                is_active=True,
+                email_verified_at__isnull=False,
             ).exists():
                 return custom_response(
                     success=False,
@@ -671,7 +744,10 @@ class UserSearchView(APIView):
         if data is None:
             users = CustomUser.objects.filter(
                 models.Q(username__icontains=query) | models.Q(email__icontains=query)
-            ).filter(is_active=True).exclude(id=request.user.id).order_by('username')[:20]
+            ).filter(
+                is_active=True,
+                email_verified_at__isnull=False,
+            ).exclude(id=request.user.id).order_by('username')[:20]
             data = UserSearchSerializer(users, many=True, context={'request': request}).data
             cache.set(cache_key, data, timeout=30)
 
@@ -696,7 +772,11 @@ class SendFriendRequestView(APIView):
                 status_code=status.HTTP_400_BAD_REQUEST
             )
         
-        target_user = CustomUser.objects.get(username__iexact=serializer.validated_data['username'], is_active=True)
+        target_user = CustomUser.objects.get(
+            username__iexact=serializer.validated_data['username'],
+            is_active=True,
+            email_verified_at__isnull=False,
+        )
         try:
             with transaction.atomic():
                 list(
