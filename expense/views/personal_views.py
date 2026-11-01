@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_date
 
 from bill_buddy.response import custom_response
 from ..models import PersonalExpense
@@ -11,17 +12,66 @@ class PersonalExpenseListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """Fetch transaction logs with optional URL query parameters for filtering."""
+        """Fetch the current user's transactions with optional filters."""
         queryset = PersonalExpense.objects.filter(user=request.user)
 
-        # Optional Query Parameter Filters
-        transaction_type = request.query_params.get('type')  # ?type=INCOME or ?type=EXPENSE
-        category = request.query_params.get('category')      # ?category=FOOD
-        
+        transaction_type = request.query_params.get('type') or request.query_params.get('transaction_type')
         if transaction_type:
-            queryset = queryset.filter(transaction_type=transaction_type.upper())
+            transaction_type = transaction_type.upper()
+            if transaction_type not in dict(PersonalExpense.TRANSACTION_TYPES):
+                return custom_response(
+                    success=False,
+                    message="Invalid transaction type.",
+                    errors={"type": "Use INCOME or EXPENSE."},
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            queryset = queryset.filter(transaction_type=transaction_type)
+
+        category = request.query_params.get('category')
         if category:
-            queryset = queryset.filter(category=category.upper())
+            category = category.upper()
+            if category not in dict(PersonalExpense.CATEGORY_CHOICES):
+                return custom_response(
+                    success=False,
+                    message="Invalid category.",
+                    errors={"category": "Choose a supported personal transaction category."},
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            queryset = queryset.filter(category=category)
+
+        parsed_dates = {}
+        for parameter, lookup in (('start_date', 'date__gte'), ('end_date', 'date__lte')):
+            value = request.query_params.get(parameter)
+            if value:
+                try:
+                    date_value = parse_date(value)
+                except ValueError:
+                    date_value = None
+                if date_value is None:
+                    return custom_response(
+                        success=False,
+                        message="Invalid date filter.",
+                        errors={parameter: "Use YYYY-MM-DD format."},
+                        status_code=status.HTTP_400_BAD_REQUEST
+                    )
+                parsed_dates[parameter] = date_value
+                queryset = queryset.filter(**{lookup: date_value})
+
+        if (
+            'start_date' in parsed_dates
+            and 'end_date' in parsed_dates
+            and parsed_dates['start_date'] > parsed_dates['end_date']
+        ):
+            return custom_response(
+                success=False,
+                message="Invalid date range.",
+                errors={"end_date": "End date must be on or after start date."},
+                status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(description__icontains=search)
 
         serializer = PersonalExpenseSerializer(queryset, many=True)
         return custom_response(

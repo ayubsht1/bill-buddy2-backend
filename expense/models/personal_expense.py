@@ -29,11 +29,20 @@ class PersonalExpense(models.Model):
         ('OTHER', 'Other'),
     ]
 
+    PAYMENT_METHOD_CHOICES = [
+        ('CASH', 'Cash'),
+        ('CARD', 'Card'),
+        ('BANK_TRANSFER', 'Bank transfer'),
+        ('MOBILE_WALLET', 'Mobile wallet'),
+        ('OTHER', 'Other'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="personal_expenses")
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES, default='EXPENSE') # Added this!
     description = models.CharField(max_length=255)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='OTHER')
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, blank=True, default='')
     date = models.DateField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
 
