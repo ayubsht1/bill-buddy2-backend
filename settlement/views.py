@@ -44,7 +44,7 @@ class RecordSettlementView(APIView):
 
     def get(self, request, group_id):
         """Returns the settlement history log for a specific group."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
@@ -61,7 +61,7 @@ class RecordSettlementView(APIView):
 
     def post(self, request, group_id):
         """Records a new peer-to-peer settlement payment securely."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False, message="You are not a member of this group.", status_code=status.HTTP_403_FORBIDDEN
@@ -85,7 +85,7 @@ class RecordSettlementView(APIView):
             )
 
         with transaction.atomic():
-            group = Group.objects.select_for_update().get(id=group_id)
+            group = Group.objects.select_for_update().get(public_id=group_id)
             if not group.members.filter(id=request.user.id).exists():
                 return custom_response(
                     success=False,
@@ -138,7 +138,7 @@ class SettlementDetailView(APIView):
 
     def delete(self, request, settlement_id):
         """Allows the person who logged the settlement to undo/delete it."""
-        settlement = get_object_or_404(Settlement, id=settlement_id)
+        settlement = get_object_or_404(Settlement, public_id=settlement_id)
 
         # 🔒 Security: Only the person who made the payment can delete it
         if settlement.paid_by != request.user:
@@ -161,7 +161,7 @@ class SettlementDetailView(APIView):
                 )
             settlement = get_object_or_404(
                 Settlement.objects.select_for_update().select_related('paid_to', 'paid_by'),
-                id=settlement_id
+                public_id=settlement_id
             )
             if settlement.paid_by_id != request.user.id:
                 return custom_response(

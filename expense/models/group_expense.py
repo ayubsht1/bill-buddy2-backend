@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.conf import settings
 from groups.models import Group
@@ -9,6 +11,7 @@ class Expense(models.Model):
         EXACT = 'EXACT', 'Exact'
         PERCENT = 'PERCENT', 'Percent'
 
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     group = models.ForeignKey('groups.Group', on_delete=models.CASCADE, related_name='expenses')
     description = models.CharField(max_length=255)
     amount = models.DecimalField(decimal_places=2, max_digits=10)

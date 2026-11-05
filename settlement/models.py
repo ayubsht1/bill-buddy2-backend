@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from groups.models import Group
 from django.conf import settings
@@ -7,6 +9,7 @@ User = get_user_model()
 
 # Create your models here.
 class Settlement(models.Model):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="settlements")
     paid_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="settlements_paid")
     paid_to = models.ForeignKey(User, on_delete=models.CASCADE, related_name="settlements_received")

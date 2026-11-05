@@ -22,10 +22,11 @@ class GroupMemberSerializer(serializers.ModelSerializer):
     """Provides minimal, clean user detail fields for group listings."""
     role = serializers.SerializerMethodField()
     profile_picture = serializers.SerializerMethodField()
+    public_id = serializers.UUIDField(read_only=True)
     
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'role']
+        fields = ['id', 'public_id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'role']
     
     def get_profile_picture(self, obj):
         request = self.context.get('request')
@@ -56,17 +57,24 @@ class GroupMembershipSerializer(serializers.ModelSerializer):
 
 
 class GroupSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
     creator = GroupMemberSerializer(read_only=True)
     members = serializers.SerializerMethodField()
     memberships = GroupMembershipSerializer(many=True, read_only=True)
     join_code = serializers.CharField(read_only=True)
     user_role = serializers.SerializerMethodField()
     group_photo = serializers.SerializerMethodField()
-    group_photo_file = serializers.FileField(write_only=True, required=False)
+    group_photo_file = serializers.ImageField(write_only=True, required=False)
+    remove_group_photo = serializers.BooleanField(write_only=True, required=False, default=False)
     
     class Meta:
         model = Group
-        fields = ['id', 'name', 'description', 'creator', 'members', 'memberships', 'join_code', 'created_at', 'user_role', 'group_photo', 'group_photo_file']
+        fields = ['id', 'name', 'description', 'creator', 'members', 'memberships', 'join_code', 'created_at', 'user_role', 'group_photo', 'group_photo_file', 'remove_group_photo']
+
+    def validate_group_photo_file(self, value):
+        if value.size > 5 * 1024 * 1024:
+            raise serializers.ValidationError("Group pictures must be 5 MB or smaller.")
+        return value
     
     def get_group_photo(self, obj):
         request = self.context.get('request')
@@ -95,33 +103,36 @@ class GroupSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         group_photo_file = validated_data.pop('group_photo_file', None)
+        validated_data.pop('remove_group_photo', None)
         group = super().create(validated_data)
         if group_photo_file:
-            import os
-            import uuid
-            ext = os.path.splitext(group_photo_file.name)[1]
-            file_path = f"group_photos/{group.id}/profile{ext}"
-            saved_path = default_storage.save(file_path, group_photo_file)
+            from .models import group_photo_upload_path
+            saved_path = default_storage.save(
+                group_photo_upload_path(group, group_photo_file.name),
+                group_photo_file,
+            )
             group.profile_picture = saved_path
             group.save(update_fields=['profile_picture'])
         return group
 
     def update(self, instance, validated_data):
         group_photo_file = validated_data.pop('group_photo_file', None)
+        remove_group_photo = validated_data.pop('remove_group_photo', False)
         old_picture = instance.profile_picture
         
         instance = super().update(instance, validated_data)
         
-        if group_photo_file:
-            import os
-            import uuid
-            ext = os.path.splitext(group_photo_file.name)[1]
-            file_path = f"group_photos/{instance.id}/profile_{uuid.uuid4().hex[:8]}{ext}"
-            saved_path = default_storage.save(file_path, group_photo_file)
+        if remove_group_photo or group_photo_file:
+            saved_path = None
+            if group_photo_file:
+                from .models import group_photo_upload_path
+                saved_path = default_storage.save(
+                    group_photo_upload_path(instance, group_photo_file.name),
+                    group_photo_file,
+                )
             instance.profile_picture = saved_path
             instance.save(update_fields=['profile_picture'])
             
-            # Clean up old group photo
             if old_picture and not old_picture.startswith(('http://', 'https://')):
                 if default_storage.exists(old_picture):
                     default_storage.delete(old_picture)
@@ -219,6 +230,7 @@ class GroupEventBudgetItemSerializer(serializers.ModelSerializer):
 
 
 class GroupEventSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
     budget_items = GroupEventBudgetItemSerializer(many=True, required=False)
     created_by = serializers.CharField(
         source='created_by.username',

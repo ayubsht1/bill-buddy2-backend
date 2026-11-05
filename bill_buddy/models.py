@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin, Permission
 from django.conf import settings
@@ -37,6 +39,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         ('PKR', 'Pakistani Rupee'),
     ]
 
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True)
     first_name = models.CharField(max_length=150, blank=True, null=True)
@@ -104,6 +107,7 @@ class Friendship(models.Model):
         PENDING = 'PENDING', 'Pending'
         ACCEPTED = 'ACCEPTED', 'Accepted'
 
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     from_user = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE, 
@@ -140,6 +144,7 @@ class PersonalMessage(models.Model):
         EMOTICON = 'emoticon', 'Emoticon'
         ATTACHMENT = 'attachment', 'Attachment'
     
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -186,3 +191,42 @@ class PersonalMessage(models.Model):
 
     def __str__(self):
         return f"Personal: {self.sender.username} -> {self.receiver.username}: {self.message[:30]}"
+
+
+class UserSession(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        LOGGED_OUT = "logged_out", "Logged out"
+        REVOKED = "revoked", "Revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="login_sessions",
+    )
+    refresh_jti = models.CharField(max_length=255, unique=True)
+    device = models.CharField(max_length=100, blank=True)
+    browser = models.CharField(max_length=100, blank=True)
+    operating_system = models.CharField(max_length=100, blank=True)
+    user_agent = models.TextField(blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    login_at = models.DateTimeField(default=timezone.now)
+    last_activity = models.DateTimeField(default=timezone.now)
+    logout_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+
+    class Meta:
+        ordering = ["-login_at"]
+        indexes = [
+            models.Index(fields=["user", "status"], name="user_session_status_idx"),
+            models.Index(fields=["user", "-login_at"], name="user_session_login_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} ({self.device or 'Unknown device'})"

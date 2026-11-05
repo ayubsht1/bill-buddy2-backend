@@ -31,7 +31,7 @@ class CreateExpenseView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -46,7 +46,7 @@ class CreateExpenseView(APIView):
         )
 
     def post(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -66,7 +66,7 @@ class CreateExpenseView(APIView):
         split_type = serializer.validated_data.get('split_type', 'EQUAL')
         split_data = serializer.validated_data.get('split_data', [])
         with transaction.atomic():
-            group = Group.objects.select_for_update().get(id=group_id)
+            group = Group.objects.select_for_update().get(public_id=group_id)
             if not group.members.filter(id=request.user.id).exists():
                 return custom_response(
                     success=False,
@@ -135,7 +135,7 @@ class GroupBalancesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -143,7 +143,7 @@ class GroupBalancesView(APIView):
                 status_code=status.HTTP_403_FORBIDDEN
             )
         with transaction.atomic():
-            group = Group.objects.select_for_update().get(id=group_id)
+            group = Group.objects.select_for_update().get(public_id=group_id)
             if not group.members.filter(id=request.user.id).exists():
                 return custom_response(
                     success=False,
@@ -184,7 +184,7 @@ class ExpenseDetailView(APIView):
     def get(self, request, expense_id):
         expense = get_object_or_404(
             Expense.objects.select_related('group', 'paid_by').prefetch_related('shares__user'),
-            id=expense_id
+            public_id=expense_id
         )
         if not expense.group.members.filter(id=request.user.id).exists():
             return custom_response(
@@ -199,7 +199,7 @@ class ExpenseDetailView(APIView):
         )
 
     def patch(self, request, expense_id):
-        expense = get_object_or_404(Expense, id=expense_id)
+        expense = get_object_or_404(Expense, public_id=expense_id)
         if not expense.group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -268,7 +268,7 @@ class ExpenseDetailView(APIView):
         return self.patch(request, expense_id)
 
     def delete(self, request, expense_id):
-        expense = get_object_or_404(Expense, id=expense_id)
+        expense = get_object_or_404(Expense, public_id=expense_id)
         if not expense.group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,

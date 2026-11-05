@@ -17,6 +17,7 @@ def group_photo_upload_path(instance, filename):
 # Create your models here.
 
 class Group(models.Model):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     # Group profile picture
@@ -119,6 +120,7 @@ class GroupMessage(models.Model):
         return f"[{self.group.name}] {sender_name}: {self.message[:30]}"
 
 class GroupEvent(models.Model):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='events')
     created_by = models.ForeignKey(
         User,

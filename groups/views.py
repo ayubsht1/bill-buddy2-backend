@@ -28,7 +28,7 @@ class GroupBalancesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -113,7 +113,7 @@ class GroupDetailView(APIView):
     def _get_group_for_member(self, request, group_id):
         group = get_object_or_404(
             Group.objects.select_related('creator').prefetch_related('memberships__user'),
-            id=group_id
+            public_id=group_id
         )
         if not group.members.filter(id=request.user.id).exists():
             return None
@@ -168,7 +168,7 @@ class GroupDetailView(APIView):
 
     def delete(self, request, group_id):
         """💥 Destroys the group entirely. Restricted exclusively to the Group Owner."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
 
         # 🔒 Security Guard: Only the group's creator/owner can delete it
         if group.creator != request.user:
@@ -213,7 +213,7 @@ class GroupEventListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -246,7 +246,7 @@ class GroupEventListCreateView(APIView):
         )
 
     def post(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(
                 success=False,
@@ -275,12 +275,12 @@ class GroupEventDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def _get_event(self, request, group_id, event_id):
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return None, None
         event = get_object_or_404(
             GroupEvent.objects.select_related('created_by').prefetch_related('budget_items'),
-            id=event_id,
+            public_id=event_id,
             group=group,
         )
         return group, event
@@ -421,7 +421,7 @@ class GroupChatView(APIView):
 
     def get(self, request, group_id):
         """Fetch the scrollback history log, excluding hidden deleted items or customizing view."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
             
@@ -431,7 +431,7 @@ class GroupChatView(APIView):
 
     def post(self, request, group_id):
         """Handles standard messaging, along with Reply and Forward mechanics."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
             
@@ -497,7 +497,7 @@ class GroupChatView(APIView):
 
     def patch(self, request, group_id):
         """📌 PIN OR 🗑️ SOFT-DELETE a targeted message inside a chat room."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
         if not group.members.filter(id=request.user.id).exists():
             return custom_response(success=False, message="Access denied.", status_code=status.HTTP_403_FORBIDDEN)
 
@@ -545,7 +545,7 @@ class AddGroupMemberView(APIView):
 
     def post(self, request, group_id):
         """Allows group admins/owner to add a member via identifier (email or username)."""
-        group = get_object_or_404(Group, id=group_id)
+        group = get_object_or_404(Group, public_id=group_id)
 
         # 🔒 Security: Only admins/owner can add members
         if not group.is_admin(request.user):
@@ -574,7 +574,7 @@ class AddGroupMemberView(APIView):
             )
 
         with transaction.atomic():
-            group = Group.objects.select_for_update().get(id=group_id)
+            group = Group.objects.select_for_update().get(public_id=group_id)
             if not group.is_admin(request.user):
                 return custom_response(
                     success=False,
@@ -631,11 +631,11 @@ class RemoveGroupMemberView(APIView):
         - If the requester is a Member: They can only remove themselves (leave).
         - Owner cannot be removed by anyone except themselves (by deleting group).
         """
-        group = get_object_or_404(Group, id=group_id)
-        user_to_remove = get_object_or_404(User, id=user_id)
+        group = get_object_or_404(Group, public_id=group_id)
+        user_to_remove = get_object_or_404(User, public_id=user_id)
 
         with transaction.atomic():
-            group = Group.objects.select_for_update().get(id=group_id)
+            group = Group.objects.select_for_update().get(public_id=group_id)
             if not group.members.filter(id=user_to_remove.id).exists():
                 return custom_response(
                     success=False,
@@ -704,8 +704,8 @@ class UpdateMemberRoleView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, group_id, user_id):
-        group = get_object_or_404(Group, id=group_id)
-        target_user = get_object_or_404(User, id=user_id)
+        group = get_object_or_404(Group, public_id=group_id)
+        target_user = get_object_or_404(User, public_id=user_id)
         new_role = request.data.get('role')
 
         # Only owner can change roles
@@ -782,8 +782,8 @@ class TransferOwnershipView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, group_id):
-        group = get_object_or_404(Group, id=group_id)
-        target_user = get_object_or_404(User, id=request.data.get('user_id'))
+        group = get_object_or_404(Group, public_id=group_id)
+        target_user = get_object_or_404(User, public_id=request.data.get('user_public_id'))
 
         # Only current owner can transfer ownership
         if not group.is_owner(request.user):

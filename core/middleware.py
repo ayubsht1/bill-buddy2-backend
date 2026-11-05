@@ -5,14 +5,20 @@ from channels.middleware import BaseMiddleware
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.tokens import AccessToken
+from core.authentication import update_active_session
 
 User = get_user_model()
 
 @database_sync_to_async
 def get_user(token):
     try:
-        user_id = AccessToken(token)['user_id']
-        return User.objects.get(id=user_id)
+        validated_token = AccessToken(token)
+        user = User.objects.get(id=validated_token['user_id'])
+        if not user.is_active or user.email_verified_at is None:
+            return AnonymousUser()
+        if not update_active_session(validated_token, user):
+            return AnonymousUser()
+        return user
     except Exception:
         return AnonymousUser()
 
