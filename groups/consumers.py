@@ -8,8 +8,7 @@ from .serializers import GroupMessageSerializer  # Import your serializer here!
 
 class GroupChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.group_id = self.scope['url_route']['kwargs']['group_id']
-        self.room_group_name = f"chat_{self.group_id}"
+        public_group_id = self.scope['url_route']['kwargs']['group_id']
         self.user = self.scope.get("user", AnonymousUser())
 
         # 1. Block unauthorized connections immediately
@@ -18,10 +17,11 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
             return
 
         # 2. Check group membership
-        is_member = await self.check_membership(self.group_id, self.user)
-        if not is_member:
+        self.group_id = await self.get_group_id(public_group_id, self.user)
+        if self.group_id is None:
             await self.close(code=4403)
             return
+        self.room_group_name = f"chat_{self.group_id}"
 
         self.user_inbox = f"user_{self.user.id}"
         await self.channel_layer.group_add(self.user_inbox, self.channel_name)
@@ -153,15 +153,17 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
         ).exists()
 
     @database_sync_to_async
-    def check_membership(self, group_id, user):
-        return (
-            get_user_model().objects.filter(
+    def get_group_id(self, public_group_id, user):
+        if not get_user_model().objects.filter(
                 pk=user.pk,
                 is_active=True,
                 email_verified_at__isnull=False,
-            ).exists()
-            and Group.objects.filter(id=group_id, members=user).exists()
-        )
+        ).exists():
+            return None
+        return Group.objects.filter(
+            public_id=public_group_id,
+            members=user,
+        ).values_list('id', flat=True).first()
 
     @database_sync_to_async
     def get_forward_text(self, message_id, user):

@@ -2,6 +2,9 @@ from rest_framework import serializers
 from .models import Settlement
 
 class SettlementSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
+    group = serializers.UUIDField(source='group.public_id', read_only=True)
+
     class Meta:
         model = Settlement
         fields = ['id', 'group', 'paid_by', 'paid_to', 'amount', 'date']

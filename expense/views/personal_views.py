@@ -106,7 +106,7 @@ class PersonalExpenseDetailView(APIView):
 
     def get_object(self, pk, user):
         """Helper method to retrieve record owned by current user."""
-        return get_object_or_404(PersonalExpense, id=pk, user=user)
+        return get_object_or_404(PersonalExpense, public_id=pk, user=user)
 
     def get(self, request, pk):
         """Fetch details of a single transaction."""

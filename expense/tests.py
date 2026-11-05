@@ -192,7 +192,7 @@ class GroupExpenseApiTests(APITestCase):
         for user in (self.alice, self.bob, self.charlie):
             GroupMembership.objects.create(group=self.group, user=user)
         self.client.force_authenticate(self.alice)
-        self.create_url = reverse("create-expense", args=[self.group.id])
+        self.create_url = reverse("create-expense", args=[self.group.public_id])
 
     def test_equal_split_distributes_cents_exactly_and_balances_sum_to_zero(self):
         response = self.client.post(
@@ -206,7 +206,7 @@ class GroupExpenseApiTests(APITestCase):
         self.assertEqual(shares, [Decimal("3.34"), Decimal("3.33"), Decimal("3.33")])
         self.assertEqual(sum(shares), expense.amount)
 
-        balances = self.client.get(reverse("group-balances", args=[self.group.id]))
+        balances = self.client.get(reverse("group-balances", args=[self.group.public_id]))
         self.assertEqual(balances.status_code, 200)
         net = [Decimal(str(item["net_balance"])) for item in balances.data["data"]["balances"]]
         self.assertEqual(sum(net), Decimal("0.00"))
@@ -305,7 +305,7 @@ class GroupExpenseApiTests(APITestCase):
 
         self.client.force_authenticate(self.outsider)
         self.assertEqual(self.client.get(detail_url).status_code, 403)
-        self.assertEqual(self.client.get(reverse("group-balances", args=[self.group.id])).status_code, 403)
+        self.assertEqual(self.client.get(reverse("group-balances", args=[self.group.public_id])).status_code, 403)
 
         self.client.force_authenticate(self.alice)
         updated = self.client.patch(detail_url, {"amount": "15.00"}, format="json")

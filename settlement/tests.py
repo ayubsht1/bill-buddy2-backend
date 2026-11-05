@@ -51,7 +51,7 @@ class SettlementApiTests(APITestCase):
         )
         ExpenseShare.objects.create(expense=expense, user=self.alice, amount=Decimal("10.00"))
         ExpenseShare.objects.create(expense=expense, user=self.bob, amount=Decimal("10.00"))
-        self.url = reverse("record-settlement", args=[self.group.id])
+        self.url = reverse("record-settlement", args=[self.group.public_id])
         self.client.force_authenticate(self.bob)
 
     def test_settlement_only_applies_to_current_debt_and_cannot_be_duplicated(self):
@@ -134,10 +134,10 @@ class SettlementApiTests(APITestCase):
             amount=Decimal("5.00"),
         )
         self.client.force_authenticate(self.alice)
-        forbidden = self.client.delete(reverse("settlement-detail", args=[settlement.id]))
+        forbidden = self.client.delete(reverse("settlement-detail", args=[settlement.public_id]))
         self.assertEqual(forbidden.status_code, 403)
 
         self.client.force_authenticate(self.bob)
-        deleted = self.client.delete(reverse("settlement-detail", args=[settlement.id]))
+        deleted = self.client.delete(reverse("settlement-detail", args=[settlement.public_id]))
         self.assertEqual(deleted.status_code, 200)
         self.assertFalse(Settlement.objects.filter(id=settlement.id).exists())

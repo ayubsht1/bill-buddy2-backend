@@ -2,6 +2,8 @@ from rest_framework import serializers
 from ..models import PersonalExpense
 
 class PersonalExpenseSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
+
     class Meta:
         model = PersonalExpense
         fields = ['id', 'transaction_type', 'description', 'amount', 'category', 'payment_method', 'date', 'created_at']

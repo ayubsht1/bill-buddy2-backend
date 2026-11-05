@@ -75,6 +75,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    public_id = serializers.UUIDField(read_only=True)
     firstName = serializers.CharField(
         source='first_name', 
         max_length=150, 
@@ -104,6 +105,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = (
             'id', 
+            'public_id',
             'email', 
             'username', 
             'firstName', 
@@ -192,6 +194,7 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 
 
 class FriendshipSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
     from_user = serializers.SerializerMethodField()
     to_user = serializers.SerializerMethodField()
     
@@ -204,6 +207,7 @@ class FriendshipSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         return {
             'id': user.id,
+            'public_id': user.public_id,
             'username': user.username,
             'email': user.email,
             'first_name': user.first_name,
@@ -255,10 +259,11 @@ class FriendRequestSerializer(serializers.Serializer):
 
 class UserSearchSerializer(serializers.ModelSerializer):
     profile_picture = serializers.SerializerMethodField()
+    public_id = serializers.UUIDField(read_only=True)
 
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture']
+        fields = ['id', 'public_id', 'username', 'email', 'first_name', 'last_name', 'profile_picture']
 
     def get_profile_picture(self, obj):
         return get_profile_picture_url(self.context.get('request'), obj.profile_picture)
@@ -269,10 +274,11 @@ class FriendSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
     profile_picture = serializers.SerializerMethodField()
+    public_id = serializers.UUIDField(read_only=True)
     
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'balance', 'status']
+        fields = ['id', 'public_id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'balance', 'status']
     
     def get_balance(self, obj):
         # This will be calculated in the view
@@ -290,10 +296,17 @@ class FriendSerializer(serializers.ModelSerializer):
         return 'settled'
 
 class PersonalMessageSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
     sender_id = serializers.IntegerField(source='sender.id', read_only=True)
     receiver_id = serializers.IntegerField(source='receiver.id', read_only=True)
+    sender_public_id = serializers.UUIDField(source='sender.public_id', read_only=True, allow_null=True)
+    receiver_public_id = serializers.UUIDField(source='receiver.public_id', read_only=True, allow_null=True)
     sender_username = serializers.CharField(source='sender.username', read_only=True)
     receiver_username = serializers.CharField(source='receiver.username', read_only=True)
+    sender_name = serializers.SerializerMethodField()
+    receiver_name = serializers.SerializerMethodField()
+    sender_profile_picture = serializers.SerializerMethodField()
+    receiver_profile_picture = serializers.SerializerMethodField()
     attachment_url = serializers.SerializerMethodField()
     attachment_type = serializers.SerializerMethodField()
     is_read = serializers.BooleanField(read_only=True)
@@ -303,7 +316,9 @@ class PersonalMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = PersonalMessage
         fields = [
-            'id', 'sender_id', 'receiver_id', 'sender_username', 'receiver_username',
+            'id', 'sender_id', 'receiver_id', 'sender_public_id', 'receiver_public_id',
+            'sender_username', 'receiver_username', 'sender_name', 'receiver_name',
+            'sender_profile_picture', 'receiver_profile_picture',
             'message', 'timestamp', 'is_read', 'is_deleted',
             'attachment_url', 'attachment_name', 'attachment_type',
             'message_type', 'reply_to_id', 'reply_to_text',
@@ -334,3 +349,19 @@ class PersonalMessageSerializer(serializers.ModelSerializer):
                 return "Original message was deleted."
             return obj.reply_to.message[:50]
         return None
+
+    @staticmethod
+    def _display_name(user):
+        return f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username
+
+    def get_sender_name(self, obj):
+        return self._display_name(obj.sender) if obj.sender else None
+
+    def get_receiver_name(self, obj):
+        return self._display_name(obj.receiver) if obj.receiver else None
+
+    def get_sender_profile_picture(self, obj):
+        return get_profile_picture_url(self.context.get('request'), obj.sender.profile_picture) if obj.sender else None
+
+    def get_receiver_profile_picture(self, obj):
+        return get_profile_picture_url(self.context.get('request'), obj.receiver.profile_picture) if obj.receiver else None

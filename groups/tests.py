@@ -53,7 +53,7 @@ class GroupApiTests(APITestCase):
         self.assertEqual(created_group.get_user_role(self.owner), GroupMembership.Role.OWNER)
 
     def test_group_update_requires_membership_and_admin_role(self):
-        url = reverse("group-detail", args=[self.group.id])
+        url = reverse("group-detail", args=[self.group.public_id])
         self.client.force_authenticate(self.outsider)
         self.assertEqual(self.client.patch(url, {"name": "Leaked"}, format="json").status_code, 403)
 
@@ -68,10 +68,10 @@ class GroupApiTests(APITestCase):
 
     def test_member_can_leave_but_cannot_kick_another_member(self):
         self.client.force_authenticate(self.member)
-        url = reverse("group-remove-member", args=[self.group.id, self.owner.id])
+        url = reverse("group-remove-member", args=[self.group.public_id, self.owner.public_id])
         self.assertEqual(self.client.delete(url).status_code, 400)
 
-        leave_url = reverse("group-remove-member", args=[self.group.id, self.member.id])
+        leave_url = reverse("group-remove-member", args=[self.group.public_id, self.member.public_id])
         self.assertEqual(self.client.delete(leave_url).status_code, 200)
         self.assertFalse(self.group.members.filter(id=self.member.id).exists())
 
@@ -87,7 +87,7 @@ class GroupApiTests(APITestCase):
     def test_member_can_create_event_with_estimated_costs_without_ledger_expenses(self):
         self.client.force_authenticate(self.member)
         response = self.client.post(
-            reverse("group-event-list", args=[self.group.id]),
+            reverse("group-event-list", args=[self.group.public_id]),
             {
                 "title": "Weekend trip",
                 "description": "Plan the shared trip",
@@ -110,7 +110,7 @@ class GroupApiTests(APITestCase):
     def test_event_requires_end_after_start(self):
         self.client.force_authenticate(self.member)
         response = self.client.post(
-            reverse("group-event-list", args=[self.group.id]),
+            reverse("group-event-list", args=[self.group.public_id]),
             {
                 "title": "Invalid event",
                 "starts_at": "2027-06-01T18:00:00Z",
@@ -125,7 +125,7 @@ class GroupApiTests(APITestCase):
     def test_event_reading_and_management_respect_group_permissions(self):
         self.client.force_authenticate(self.owner)
         created = self.client.post(
-            reverse("group-event-list", args=[self.group.id]),
+            reverse("group-event-list", args=[self.group.public_id]),
             {
                 "title": "Dinner",
                 "starts_at": "2027-06-01T18:00:00Z",
@@ -134,7 +134,7 @@ class GroupApiTests(APITestCase):
             format="json",
         )
         event_id = created.data["data"]["id"]
-        detail_url = reverse("group-event-detail", args=[self.group.id, event_id])
+        detail_url = reverse("group-event-detail", args=[self.group.public_id, event_id])
 
         self.client.force_authenticate(self.member)
         self.assertEqual(self.client.patch(detail_url, {"title": "Unauthorized"}).status_code, 403)
@@ -152,7 +152,7 @@ class GroupApiTests(APITestCase):
         with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
             self.client.force_authenticate(self.member)
             response = self.client.post(
-                reverse("group-chat", args=[self.group.id]),
+                reverse("group-chat", args=[self.group.public_id]),
                 {
                     "message": "Trip photo",
                     "attachment": SimpleUploadedFile(
@@ -171,12 +171,12 @@ class GroupApiTests(APITestCase):
             message = self.group.chat_messages.get(id=data["id"])
             self.assertTrue(message.attachment.storage.exists(message.attachment.name))
 
-            history = self.client.get(reverse("group-chat", args=[self.group.id]))
+            history = self.client.get(reverse("group-chat", args=[self.group.public_id]))
             self.assertEqual(history.status_code, 200)
             self.assertEqual(history.data["data"][0]["attachment_url"], data["attachment_url"])
 
             deleted = self.client.patch(
-                reverse("group-chat", args=[self.group.id]),
+                reverse("group-chat", args=[self.group.public_id]),
                 {"message_id": data["id"], "action": "delete"},
                 format="json",
             )
@@ -186,7 +186,7 @@ class GroupApiTests(APITestCase):
 
     def test_chat_attachment_rejects_unsupported_and_oversized_files(self):
         self.client.force_authenticate(self.member)
-        url = reverse("group-chat", args=[self.group.id])
+        url = reverse("group-chat", args=[self.group.public_id])
         unsupported = self.client.post(
             url,
             {"attachment": SimpleUploadedFile("script.html", b"<script></script>")},
@@ -205,7 +205,7 @@ class GroupApiTests(APITestCase):
     def test_non_member_cannot_send_chat_attachment(self):
         self.client.force_authenticate(self.outsider)
         response = self.client.post(
-            reverse("group-chat", args=[self.group.id]),
+            reverse("group-chat", args=[self.group.public_id]),
             {"attachment": SimpleUploadedFile("trip.jpg", b"image")},
             format="multipart",
         )

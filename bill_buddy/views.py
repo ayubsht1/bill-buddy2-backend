@@ -950,7 +950,7 @@ class AcceptFriendRequestView(APIView):
     
     def post(self, request, friendship_id):
         with transaction.atomic():
-            friendship = get_object_or_404(Friendship.objects.select_for_update(), id=friendship_id)
+            friendship = get_object_or_404(Friendship.objects.select_for_update(), public_id=friendship_id)
             if friendship.to_user != request.user:
                 return custom_response(
                     success=False,
@@ -979,7 +979,7 @@ class RejectFriendRequestView(APIView):
     
     def post(self, request, friendship_id):
         with transaction.atomic():
-            friendship = get_object_or_404(Friendship.objects.select_for_update(), id=friendship_id)
+            friendship = get_object_or_404(Friendship.objects.select_for_update(), public_id=friendship_id)
             if friendship.to_user != request.user:
                 return custom_response(
                     success=False,
@@ -1006,7 +1006,7 @@ class CancelFriendRequestView(APIView):
     
     def post(self, request, friendship_id):
         with transaction.atomic():
-            friendship = get_object_or_404(Friendship.objects.select_for_update(), id=friendship_id)
+            friendship = get_object_or_404(Friendship.objects.select_for_update(), public_id=friendship_id)
             if friendship.from_user != request.user:
                 return custom_response(
                     success=False,
@@ -1100,10 +1100,11 @@ class RemoveFriendView(APIView):
     permission_classes = [IsAuthenticated]
     
     def delete(self, request, friend_id):
+        friend = get_object_or_404(User, public_id=friend_id)
         # Find the friendship
         friendship = Friendship.objects.filter(
-            models.Q(from_user=request.user, to_user_id=friend_id) |
-            models.Q(from_user_id=friend_id, to_user=request.user),
+            models.Q(from_user=request.user, to_user=friend) |
+            models.Q(from_user=friend, to_user=request.user),
             status=Friendship.Status.ACCEPTED
         ).first()
         
@@ -1127,10 +1128,11 @@ class FriendDetailView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request, friend_id):
+        friend = get_object_or_404(CustomUser, public_id=friend_id)
         # Verify they are friends
         friendship = Friendship.objects.filter(
-            models.Q(from_user=request.user, to_user_id=friend_id) |
-            models.Q(from_user_id=friend_id, to_user=request.user),
+            models.Q(from_user=request.user, to_user=friend) |
+            models.Q(from_user=friend, to_user=request.user),
             status=Friendship.Status.ACCEPTED
         ).first()
         
@@ -1141,7 +1143,7 @@ class FriendDetailView(APIView):
                 status_code=status.HTTP_404_NOT_FOUND
             )
         
-        friend = CustomUser.objects.get(id=friend_id)
+        friend_id = friend.id
         
         # Get shared groups
         shared_groups = Group.objects.filter(
@@ -1162,7 +1164,7 @@ class FriendDetailView(APIView):
         friend_data = UserSearchSerializer(friend, context={'request': request}).data
         friend_data['balance'] = balance
         friend_data['status'] = 'owed' if balance > 0 else ('owe' if balance < 0 else 'settled')
-        friend_data['shared_groups'] = [{'id': g.id, 'name': g.name} for g in shared_groups]
+        friend_data['shared_groups'] = [{'id': str(g.public_id), 'name': g.name} for g in shared_groups]
         friend_data['shared_expenses'] = [
             {
                 'id': e.id,
@@ -1243,7 +1245,7 @@ class PersonalMessageListCreateView(APIView):
         friend_id = request.query_params.get('friend_id') or request.query_params.get('user_id')
 
         if friend_id:
-            friend = get_object_or_404(User, id=friend_id)
+            friend = get_object_or_404(User, public_id=friend_id)
             if not are_friends(user, friend):
                 return custom_response(
                     success=False,
@@ -1279,13 +1281,14 @@ class PersonalMessageListCreateView(APIView):
         )
 
     def post(self, request):
+        receiver_public_id = request.data.get('receiver_public_id')
         receiver_id = request.data.get('receiver_id')
         message_text = request.data.get('message', '')
         message_text = message_text.strip() if isinstance(message_text, str) else ''
         attachment = request.FILES.get('attachment')
         reply_to_id = request.data.get('reply_to_id')
 
-        if not receiver_id:
+        if not receiver_public_id and not receiver_id:
             return custom_response(success=False, message="Receiver ID is required.",
                                    status_code=status.HTTP_400_BAD_REQUEST)
         if not message_text and not attachment:
@@ -1293,7 +1296,9 @@ class PersonalMessageListCreateView(APIView):
                                    status_code=status.HTTP_400_BAD_REQUEST)
 
         try:
-            receiver = User.objects.get(id=receiver_id)
+            receiver = User.objects.get(
+                public_id=receiver_public_id
+            ) if receiver_public_id else User.objects.get(id=receiver_id)
         except User.DoesNotExist:
             return custom_response(success=False, message="Receiver not found.",
                                    status_code=status.HTTP_404_NOT_FOUND)
@@ -1345,7 +1350,7 @@ class PersonalMessageDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def _get_message(self, message_id):
-        return PersonalMessage.objects.select_related('sender', 'receiver', 'reply_to').filter(id=message_id).first()
+        return PersonalMessage.objects.select_related('sender', 'receiver', 'reply_to').filter(public_id=message_id).first()
 
     def patch(self, request, message_id):
         """Mark a message as read (receiver only)."""

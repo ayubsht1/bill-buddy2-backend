@@ -51,30 +51,33 @@ class PersonalChatConsumer(AsyncWebsocketConsumer):
 
         # --- SEND / REPLY ---
         if action == 'send_message':
-            receiver_id = data.get('receiver_id')
+            receiver_public_id = data.get('receiver_public_id')
             message_text = (data.get('message') or '').strip()
-            if not receiver_id or not message_text:
+            if not receiver_public_id or not message_text:
                 return
 
             serialized = await self.save_message(
-                self.user, receiver_id, message_text,
+                self.user, receiver_public_id, message_text,
                 data.get('reply_to_id'), data.get('message_type'),
             )
             if serialized:
+                receiver_id = await self.get_user_id(receiver_public_id)
+                if receiver_id is None:
+                    return
                 await self.broadcast(
-                    [self.user.id, int(receiver_id)], 'chat_message', serialized
+                    [self.user.id, receiver_id], 'chat_message', serialized
                 )
 
         # --- MARK CONVERSATION AS READ ---
         elif action == 'mark_read':
-            friend_id = data.get('friend_id')
-            if not friend_id:
+            friend_public_id = data.get('friend_public_id')
+            if not friend_public_id:
                 return
-            count = await self.mark_conversation_read(self.user, friend_id)
+            count, friend_id = await self.mark_conversation_read(self.user, friend_public_id)
             if count:
                 # tell the friend their messages were seen
                 await self.broadcast(
-                    [int(friend_id)], 'messages_read',
+                    [friend_id], 'messages_read',
                     {'reader_id': self.user.id, 'count': count},
                 )
 
@@ -129,8 +132,8 @@ class PersonalChatConsumer(AsyncWebsocketConsumer):
         ).exists()
 
     @database_sync_to_async
-    def save_message(self, user, receiver_id, text, reply_to_id, message_type):
-        receiver = User.objects.filter(id=receiver_id).first()
+    def save_message(self, user, receiver_public_id, text, reply_to_id, message_type):
+        receiver = User.objects.filter(public_id=receiver_public_id).first()
         if not receiver or not are_friends(user, receiver):
             return None
 
@@ -157,13 +160,18 @@ class PersonalChatConsumer(AsyncWebsocketConsumer):
         return PersonalMessageSerializer(msg).data
 
     @database_sync_to_async
-    def mark_conversation_read(self, user, friend_id):
-        friend = User.objects.filter(id=friend_id).first()
+    def mark_conversation_read(self, user, friend_public_id):
+        friend = User.objects.filter(public_id=friend_public_id).first()
         if not friend or not are_friends(user, friend):
-            return 0
-        return PersonalMessage.objects.filter(
+            return 0, 0
+        count = PersonalMessage.objects.filter(
             sender=friend, receiver=user, is_read=False
         ).update(is_read=True)
+        return count, friend.id
+
+    @database_sync_to_async
+    def get_user_id(self, public_id):
+        return User.objects.filter(public_id=public_id).values_list('id', flat=True).first()
 
     @database_sync_to_async
     def delete_message(self, message_id, user):

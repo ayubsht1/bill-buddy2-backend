@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -37,6 +39,7 @@ class PersonalExpense(models.Model):
         ('OTHER', 'Other'),
     ]
 
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="personal_expenses")
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES, default='EXPENSE') # Added this!
     description = models.CharField(max_length=255)

@@ -10,6 +10,8 @@ class ExpenseShareSerializer(serializers.ModelSerializer):
         fields = ['user_id', 'email', 'amount']
 
 class ExpenseCreateSerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(source='public_id', read_only=True)
+    group = serializers.UUIDField(source='group.public_id', read_only=True)
     split_data = serializers.ListField(
         child=serializers.JSONField(),
         write_only=True, 

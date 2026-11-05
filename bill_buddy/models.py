@@ -39,6 +39,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         ('PKR', 'Pakistani Rupee'),
     ]
 
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     email = models.EmailField(unique=True)
     username = models.CharField(max_length=150, unique=True)
     first_name = models.CharField(max_length=150, blank=True, null=True)
@@ -106,6 +107,7 @@ class Friendship(models.Model):
         PENDING = 'PENDING', 'Pending'
         ACCEPTED = 'ACCEPTED', 'Accepted'
 
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     from_user = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE, 
@@ -142,6 +144,7 @@ class PersonalMessage(models.Model):
         EMOTICON = 'emoticon', 'Emoticon'
         ATTACHMENT = 'attachment', 'Attachment'
     
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,

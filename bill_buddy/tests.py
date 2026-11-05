@@ -16,7 +16,7 @@ from PIL import Image
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
-from .models import EmailVerificationToken, Friendship, PasswordResetToken, UserSession
+from .models import EmailVerificationToken, Friendship, PasswordResetToken, UserSession, PersonalMessage
 from .tasks import send_password_reset_email_task, send_verification_email_task
 from .utils import send_password_reset_email, send_verification_email
 from expense.models import PersonalExpense
@@ -78,11 +78,11 @@ class FriendshipApiTests(APITestCase):
 
     def test_accept_requires_recipient_and_accepted_friend_is_listed(self):
         friendship = Friendship.objects.create(from_user=self.alice, to_user=self.bob)
-        unauthorized = self.client.post(reverse("accept-friend-request", args=[friendship.id]))
+        unauthorized = self.client.post(reverse("accept-friend-request", args=[friendship.public_id]))
         self.assertEqual(unauthorized.status_code, 403)
 
         self.client.force_authenticate(self.bob)
-        accepted = self.client.post(reverse("accept-friend-request", args=[friendship.id]))
+        accepted = self.client.post(reverse("accept-friend-request", args=[friendship.public_id]))
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.data["data"]["status"], Friendship.Status.ACCEPTED)
 
@@ -113,7 +113,7 @@ class FriendshipApiTests(APITestCase):
             "http://testserver/media/profile_pics/bob.png",
         )
 
-        Friendship.objects.filter(id=pending.data["data"]["id"]).update(
+        Friendship.objects.filter(public_id=pending.data["data"]["id"]).update(
             status=Friendship.Status.ACCEPTED
         )
         listed = self.client.get(reverse("friend-list"))
@@ -122,32 +122,71 @@ class FriendshipApiTests(APITestCase):
             "http://testserver/media/profile_pics/bob.png",
         )
 
-        detail = self.client.get(reverse("friend-detail", args=[self.bob.id]))
+        detail = self.client.get(reverse("friend-detail", args=[self.bob.public_id]))
         self.assertEqual(
             detail.data["data"]["profile_picture"],
             "http://testserver/media/profile_pics/bob.png",
         )
 
+    @override_settings(MEDIA_URL="/media/")
+    def test_direct_message_payload_includes_names_public_ids_and_profile_pictures(self):
+        self.alice.first_name = "Alice"
+        self.alice.last_name = "Friend"
+        self.alice.profile_picture = "profile_pics/alice.png"
+        self.alice.save(update_fields=["first_name", "last_name", "profile_picture"])
+        self.bob.first_name = "Bob"
+        self.bob.last_name = "Buddy"
+        self.bob.profile_picture = "profile_pics/bob.png"
+        self.bob.save(update_fields=["first_name", "last_name", "profile_picture"])
+        Friendship.objects.create(
+            from_user=self.alice,
+            to_user=self.bob,
+            status=Friendship.Status.ACCEPTED,
+        )
+        PersonalMessage.objects.create(
+            sender=self.bob,
+            receiver=self.alice,
+            message="Hello",
+        )
+
+        response = self.client.get(
+            reverse("personal-messages"),
+            {"friend_id": str(self.bob.public_id)},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        message = response.data["data"][0]
+        self.assertEqual(message["sender_name"], "Bob Buddy")
+        self.assertEqual(message["sender_public_id"], str(self.bob.public_id))
+        self.assertEqual(
+            message["sender_profile_picture"],
+            "http://testserver/media/profile_pics/bob.png",
+        )
+        self.assertEqual(
+            message["receiver_profile_picture"],
+            "http://testserver/media/profile_pics/alice.png",
+        )
+
     def test_sender_can_cancel_and_recipient_can_reject_only(self):
         friendship = Friendship.objects.create(from_user=self.alice, to_user=self.bob)
-        reject_by_sender = self.client.post(reverse("reject-friend-request", args=[friendship.id]))
+        reject_by_sender = self.client.post(reverse("reject-friend-request", args=[friendship.public_id]))
         self.assertEqual(reject_by_sender.status_code, 403)
-        cancelled = self.client.post(reverse("cancel-friend-request", args=[friendship.id]))
+        cancelled = self.client.post(reverse("cancel-friend-request", args=[friendship.public_id]))
         self.assertEqual(cancelled.status_code, 200)
         self.assertFalse(Friendship.objects.filter(id=friendship.id).exists())
 
         friendship = Friendship.objects.create(from_user=self.alice, to_user=self.bob)
         self.client.force_authenticate(self.bob)
-        rejected = self.client.post(reverse("reject-friend-request", args=[friendship.id]))
+        rejected = self.client.post(reverse("reject-friend-request", args=[friendship.public_id]))
         self.assertEqual(rejected.status_code, 200)
         self.assertFalse(Friendship.objects.filter(id=friendship.id).exists())
 
     def test_friend_removal_requires_accepted_friendship(self):
-        self.assertEqual(self.client.delete(reverse("remove-friend", args=[self.bob.id])).status_code, 404)
+        self.assertEqual(self.client.delete(reverse("remove-friend", args=[self.bob.public_id])).status_code, 404)
         Friendship.objects.create(
             from_user=self.alice, to_user=self.bob, status=Friendship.Status.ACCEPTED
         )
-        self.assertEqual(self.client.delete(reverse("remove-friend", args=[self.bob.id])).status_code, 200)
+        self.assertEqual(self.client.delete(reverse("remove-friend", args=[self.bob.public_id])).status_code, 200)
 
     def test_google_login_requires_a_verified_id_token(self):
         self.client.force_authenticate(user=None)
