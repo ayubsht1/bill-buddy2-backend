@@ -2,7 +2,8 @@ from rest_framework.views import APIView
 # from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth import authenticate
-from .models import CustomUser, PasswordResetToken, EmailVerificationToken, Friendship, PersonalMessage
+from .models import CustomUser, PasswordResetToken, EmailVerificationToken, Friendship, PersonalMessage, UserSession
+from .session_utils import close_session, create_login_tokens, session_from_refresh_token
 from .utils import send_verification_email, send_password_reset_email, are_friends, push_event
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -177,7 +178,7 @@ class LoginView(APIView):
                 status_code=status.HTTP_401_UNAUTHORIZED
             )
 
-        refresh = RefreshToken.for_user(user)
+        _, refresh = create_login_tokens(user, request)
 
         return custom_response(
             success=True,
@@ -306,7 +307,7 @@ class GoogleLoginView(APIView):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        refresh = RefreshToken.for_user(user)
+        _, refresh = create_login_tokens(user, request)
 
         msg = "Google account created and logged in." if created else "Google login successful."
 
@@ -554,6 +555,9 @@ class LogoutView(APIView):
                     message="Refresh token does not belong to the authenticated user.",
                     status_code=status.HTTP_403_FORBIDDEN
                 )
+            session = session_from_refresh_token(token)
+            if session:
+                close_session(session, UserSession.Status.LOGGED_OUT)
             token.blacklist()
 
             return custom_response(
@@ -649,6 +653,16 @@ class TokenRefreshView(APIView):
                     message="The account for this refresh token is unavailable.",
                     status_code=status.HTTP_401_UNAUTHORIZED
                 )
+
+            session_id = refresh.get("session_id")
+            if session_id:
+                session = session_from_refresh_token(refresh)
+                if session is None or session.status != UserSession.Status.ACTIVE:
+                    return custom_response(
+                        success=False,
+                        message="This session is no longer active.",
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                    )
             
             # Generate a clean new access token rotation payload
             data = {
@@ -668,6 +682,94 @@ class TokenRefreshView(APIView):
                 message="Token is invalid or has expired.",
                 status_code=status.HTTP_401_UNAUTHORIZED
             )
+
+
+def serialize_session(session, current_session_id):
+    return {
+        "id": str(session.pk),
+        "device": session.device or "Unknown device",
+        "browser": session.browser or "Unknown browser",
+        "operating_system": session.operating_system or "Unknown OS",
+        "ip_address": session.ip_address,
+        "login_at": session.login_at,
+        "last_activity": session.last_activity,
+        "logout_at": session.logout_at,
+        "status": session.status,
+        "is_current": str(session.pk) == str(current_session_id or ""),
+    }
+
+
+class ActiveSessionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sessions = UserSession.objects.filter(
+            user=request.user,
+            status=UserSession.Status.ACTIVE,
+        )
+        current_session_id = getattr(request.auth, "get", lambda *_: None)("session_id")
+        return custom_response(
+            success=True,
+            message="Active sessions retrieved.",
+            data=[serialize_session(session, current_session_id) for session in sessions],
+        )
+
+
+class SessionHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sessions = UserSession.objects.filter(user=request.user).exclude(
+            status=UserSession.Status.ACTIVE,
+        )[:100]
+        current_session_id = getattr(request.auth, "get", lambda *_: None)("session_id")
+        return custom_response(
+            success=True,
+            message="Session history retrieved.",
+            data=[serialize_session(session, current_session_id) for session in sessions],
+        )
+
+
+class RevokeSessionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = get_object_or_404(
+            UserSession,
+            pk=session_id,
+            user=request.user,
+        )
+        if session.status != UserSession.Status.ACTIVE:
+            return custom_response(
+                success=False,
+                message="This session is no longer active.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        close_session(session, UserSession.Status.REVOKED)
+        return custom_response(success=True, message="Session revoked.")
+
+
+class RevokeOtherSessionsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_session_id = getattr(request.auth, "get", lambda *_: None)("session_id")
+        sessions = UserSession.objects.filter(
+            user=request.user,
+            status=UserSession.Status.ACTIVE,
+        )
+        if current_session_id:
+            sessions = sessions.exclude(pk=current_session_id)
+        revoked_count = 0
+        with transaction.atomic():
+            for session in sessions:
+                close_session(session, UserSession.Status.REVOKED)
+                revoked_count += 1
+        return custom_response(
+            success=True,
+            message="Other sessions revoked.",
+            data={"revoked_count": revoked_count},
+        )
 
 class VerifyTokenView(APIView):
     """

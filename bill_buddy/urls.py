@@ -3,7 +3,8 @@ from .views import (RegisterView, LoginView, EmailVerifyView, PasswordResetReque
 ResendVerificationEmailView, LogoutView, GoogleLoginView, TokenRefreshView, UserProfileView, ChangePasswordView, VerifyTokenView,
 UserSearchView, SendFriendRequestView, FriendRequestListView, AcceptFriendRequestView, RejectFriendRequestView,
 CancelFriendRequestView, FriendListView, RemoveFriendView, FriendDetailView, PersonalMessageListCreateView,
-PersonalMessageDetailView, AccountDeletionView)
+PersonalMessageDetailView, AccountDeletionView, ActiveSessionsView, SessionHistoryView,
+RevokeSessionView, RevokeOtherSessionsView)
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
@@ -19,6 +20,10 @@ urlpatterns = [
     path("google-login/", GoogleLoginView.as_view(), name="social-login"),
     path('token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('token/verify/', VerifyTokenView.as_view(), name='token-verify'),
+    path('sessions/', ActiveSessionsView.as_view(), name='active-sessions'),
+    path('sessions/history/', SessionHistoryView.as_view(), name='session-history'),
+    path('sessions/<uuid:session_id>/revoke/', RevokeSessionView.as_view(), name='revoke-session'),
+    path('sessions/revoke-others/', RevokeOtherSessionsView.as_view(), name='revoke-other-sessions'),
     
     # Friendship URLs
     path('friends/search/', UserSearchView.as_view(), name='user-search'),

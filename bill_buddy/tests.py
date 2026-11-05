@@ -14,9 +14,9 @@ from django.utils import timezone
 from asgiref.sync import async_to_sync
 from PIL import Image
 from rest_framework.test import APITestCase
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
-from .models import EmailVerificationToken, Friendship, PasswordResetToken
+from .models import EmailVerificationToken, Friendship, PasswordResetToken, UserSession
 from .tasks import send_password_reset_email_task, send_verification_email_task
 from .utils import send_password_reset_email, send_verification_email
 from expense.models import PersonalExpense
@@ -170,6 +170,8 @@ class FriendshipApiTests(APITestCase):
         google_user = User.objects.get(email="google@example.test")
         self.assertTrue(google_user.is_active)
         self.assertEqual(verified.data["data"]["user"]["id"], google_user.id)
+        self.assertEqual(UserSession.objects.filter(user=google_user).count(), 1)
+        self.assertIn("session_id", AccessToken(verified.data["data"]["access"]))
 
     def test_friend_endpoints_require_authentication(self):
         self.client.force_authenticate(user=None)
@@ -192,6 +194,111 @@ class FriendshipApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 401)
+
+
+class SessionManagementApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="sessions@example.test",
+            password="SecurePassphrase!472",
+            username="sessions-user",
+            is_active=True,
+            email_verified_at=timezone.now(),
+        )
+
+    def login(self, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"):
+        response = self.client.post(
+            reverse("login"),
+            {"email": self.user.email, "password": "SecurePassphrase!472"},
+            format="json",
+            HTTP_X_SESSION_USER_AGENT=user_agent,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def authenticate_with(self, access_token):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+    def test_login_creates_session_and_active_session_lists_device_metadata(self):
+        tokens = self.login()
+        self.authenticate_with(tokens["access"])
+
+        response = self.client.get(reverse("active-sessions"))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["data"]), 1)
+        session = response.data["data"][0]
+        self.assertTrue(session["is_current"])
+        self.assertEqual(session["device"], "Desktop")
+        self.assertEqual(session["browser"], "Chrome 120.0")
+        self.assertEqual(session["operating_system"], "Windows")
+        self.assertEqual(session["ip_address"], "127.0.0.1")
+        record = UserSession.objects.get(pk=AccessToken(tokens["access"])["session_id"])
+        self.assertEqual(record.status, UserSession.Status.ACTIVE)
+
+    def test_revoking_other_sessions_blocks_access_and_refresh(self):
+        current = self.login()
+        other = self.login("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile Safari/17")
+        self.authenticate_with(current["access"])
+
+        revoked = self.client.post(reverse("revoke-other-sessions"), {}, format="json")
+        self.assertEqual(revoked.status_code, 200, revoked.data)
+        self.assertEqual(revoked.data["data"]["revoked_count"], 1)
+
+        active = self.client.get(reverse("active-sessions"))
+        self.assertEqual(len(active.data["data"]), 1)
+        self.assertTrue(active.data["data"][0]["is_current"])
+
+        self.authenticate_with(other["access"])
+        self.assertEqual(self.client.get(reverse("user-profile")).status_code, 401)
+        self.assertEqual(
+            self.client.post(
+                reverse("token-refresh"), {"refresh": other["refresh"]}, format="json"
+            ).status_code,
+            401,
+        )
+        history = self.client.get(reverse("session-history"))
+        self.assertEqual(history.status_code, 401)
+
+        self.authenticate_with(current["access"])
+        history = self.client.get(reverse("session-history"))
+        self.assertEqual(history.status_code, 200, history.data)
+        self.assertEqual(history.data["data"][0]["status"], UserSession.Status.REVOKED)
+
+    def test_individual_revoke_and_logout_are_recorded(self):
+        tokens = self.login()
+        record = UserSession.objects.get(pk=AccessToken(tokens["access"])["session_id"])
+        self.authenticate_with(tokens["access"])
+
+        logout = self.client.post(
+            reverse("logout"),
+            {"refresh": tokens["refresh"]},
+            format="json",
+        )
+
+        self.assertEqual(logout.status_code, 200, logout.data)
+        record.refresh_from_db()
+        self.assertEqual(record.status, UserSession.Status.LOGGED_OUT)
+        self.assertIsNotNone(record.logout_at)
+        self.assertTrue(
+            UserSession.objects.filter(pk=record.pk, status=UserSession.Status.LOGGED_OUT).exists()
+        )
+
+    def test_individual_revocation_blocks_the_revoked_access_token(self):
+        current = self.login()
+        other = self.login("Mozilla/5.0 (Android 14; Mobile) Chrome/120.0")
+        other_session_id = AccessToken(other["access"])["session_id"]
+        self.authenticate_with(current["access"])
+
+        response = self.client.post(
+            reverse("revoke-session", args=[other_session_id]),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.authenticate_with(other["access"])
+        self.assertEqual(self.client.get(reverse("user-profile")).status_code, 401)
 
 
 @override_settings(CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}})
