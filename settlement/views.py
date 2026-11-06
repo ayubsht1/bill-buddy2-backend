@@ -10,6 +10,7 @@ from bill_buddy.response import custom_response
 from .models import Settlement
 from .serializers import SettlementSerializer
 from expense.utils import group_net_balances, suggested_settlement_amount
+from notifications.services import emit_notification
 
 # Real-time WebSocket support
 from channels.layers import get_channel_layer
@@ -122,6 +123,16 @@ class RecordSettlementView(APIView):
 
             system_msg = f"{request.user.username} settled ${settlement.amount} with {paid_to_user.username}."
             GroupMessage.objects.create(group=group, sender=None, message=system_msg)
+            emit_notification(
+                user=paid_to_user,
+                category='settlements',
+                title=f'Payment received in {group.name}',
+                message=f'{request.user.username} recorded a payment of {settlement.amount}.',
+                dedupe_key=f'settlement:{settlement.public_id}:received',
+                url='/settlements',
+                email=True,
+                email_subject=f'Payment recorded in {group.name}',
+            )
 
         _broadcast_system_message(group.id, system_msg)
 
@@ -171,11 +182,21 @@ class SettlementDetailView(APIView):
                 )
             recipient_name = settlement.paid_to.username
             amount = settlement.amount
+            public_id = settlement.public_id
+            paid_to = settlement.paid_to
             settlement.delete()
             
             # Log the rollback to the database chat history log too
             delete_msg = f"⚠️ {request.user.username} deleted the settlement record of ${amount} to {recipient_name}."
             GroupMessage.objects.create(group_id=group_id, sender=None, message=delete_msg)
+            emit_notification(
+                user=paid_to,
+                category='settlements',
+                title='Settlement payment removed',
+                message=f'{request.user.username} removed a payment of {amount} from the group record.',
+                dedupe_key=f'settlement:{public_id}:removed',
+                url='/settlements',
+            )
 
         _broadcast_system_message(group_id, delete_msg)
 

@@ -5,6 +5,7 @@ from django.contrib.auth import authenticate
 from .models import CustomUser, PasswordResetToken, EmailVerificationToken, Friendship, PersonalMessage, UserSession
 from .session_utils import close_session, create_login_tokens, session_from_refresh_token
 from .utils import send_verification_email, send_password_reset_email, are_friends, push_event
+from notifications.services import emit_notification
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from .response import custom_response
@@ -58,6 +59,31 @@ ALLOWED_CHAT_ATTACHMENT_EXTENSIONS = {
     '.xls', '.xlsx', '.ppt', '.pptx',
 }
 
+
+def create_login_tokens_with_notification(user, request):
+    user_agent = (
+        request.META.get("HTTP_X_SESSION_USER_AGENT")
+        or request.META.get("HTTP_USER_AGENT", "")
+    )[:2000]
+    is_new_device = not UserSession.objects.filter(
+        user=user,
+        user_agent=user_agent,
+    ).exists()
+    session, refresh = create_login_tokens(user, request)
+    if is_new_device:
+        emit_notification(
+            user=user,
+            category="security",
+            title="New sign-in to your Bill Buddy account",
+            message=f"A sign-in was detected from a new device: {session.device} ({session.browser}).",
+            dedupe_key=f"security:login:{session.pk}",
+            url="/settings",
+            email=True,
+            email_subject="New sign-in to your Bill Buddy account",
+        )
+    return session, refresh
+
+
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -86,6 +112,16 @@ class RegisterView(APIView):
             )
 
         user = serializer.save()
+        emit_notification(
+            user=user,
+            category="security",
+            title="Your Bill Buddy account was created",
+            message="Your account is ready. Verify your email address to get started.",
+            dedupe_key=f"security:registration:{user.pk}",
+            url="/auth/login",
+            email=True,
+            email_subject="Your Bill Buddy account was created",
+        )
         send_verification_email(user, request)
 
         return custom_response(
@@ -178,7 +214,7 @@ class LoginView(APIView):
                 status_code=status.HTTP_401_UNAUTHORIZED
             )
 
-        _, refresh = create_login_tokens(user, request)
+        session, refresh = create_login_tokens_with_notification(user, request)
 
         return custom_response(
             success=True,
@@ -307,7 +343,18 @@ class GoogleLoginView(APIView):
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        _, refresh = create_login_tokens(user, request)
+        _, refresh = create_login_tokens_with_notification(user, request)
+        if created:
+            emit_notification(
+                user=user,
+                category="security",
+                title="Your Bill Buddy account was created",
+                message="Your account was created with Google and is ready to use.",
+                dedupe_key=f"security:registration:{user.pk}",
+                url="/settings",
+                email=True,
+                email_subject="Your Bill Buddy account was created",
+            )
 
         msg = "Google account created and logged in." if created else "Google login successful."
 
@@ -424,6 +471,16 @@ class ChangePasswordView(APIView):
         # Commit changes securely
         user.set_password(new_password)
         user.save()
+        emit_notification(
+            user=user,
+            category='security',
+            title='Your Bill Buddy password was changed',
+            message='Your account password was changed successfully. If this was not you, secure your account immediately.',
+            dedupe_key=f'security:password-changed:{timezone.now().isoformat()}',
+            url='/settings',
+            email=True,
+            email_subject='Your Bill Buddy password was changed',
+        )
 
         message = (
             "Password created successfully. You can now use email/password or Google to log in."
@@ -1335,6 +1392,14 @@ class PersonalMessageListCreateView(APIView):
             attachment_name=os.path.basename(attachment.name.replace('\\', '/'))[:255] if attachment else '',
             reply_to=reply_to_obj,
             message_type=msg_type,
+        )
+        emit_notification(
+            user=receiver,
+            category='chat',
+            title=f'New message from {request.user.username}',
+            message=message_text[:240] or 'You received an attachment.',
+            dedupe_key=f'personal-message:{personal_message.public_id}:{receiver.pk}',
+            url='/messages',
         )
 
         serializer = PersonalMessageSerializer(personal_message, context={'request': request})

@@ -19,6 +19,7 @@ from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from .models import EmailVerificationToken, Friendship, PasswordResetToken, UserSession, PersonalMessage
 from .tasks import send_password_reset_email_task, send_verification_email_task
 from .utils import send_password_reset_email, send_verification_email
+from notifications.models import EmailDelivery, Notification
 from expense.models import PersonalExpense
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from core.authentication import get_user_from_token
@@ -211,6 +212,17 @@ class FriendshipApiTests(APITestCase):
         self.assertEqual(verified.data["data"]["user"]["id"], google_user.id)
         self.assertEqual(UserSession.objects.filter(user=google_user).count(), 1)
         self.assertIn("session_id", AccessToken(verified.data["data"]["access"]))
+        self.assertSetEqual(
+            set(
+                Notification.objects.filter(user=google_user).values_list(
+                    "dedupe_key", flat=True
+                )
+            ),
+            {
+                f"security:registration:{google_user.pk}",
+                f"security:login:{UserSession.objects.get(user=google_user).pk}",
+            },
+        )
 
     def test_friend_endpoints_require_authentication(self):
         self.client.force_authenticate(user=None)
@@ -274,6 +286,27 @@ class SessionManagementApiTests(APITestCase):
         self.assertEqual(session["ip_address"], "127.0.0.1")
         record = UserSession.objects.get(pk=AccessToken(tokens["access"])["session_id"])
         self.assertEqual(record.status, UserSession.Status.ACTIVE)
+
+    def test_new_device_login_creates_security_notification_and_email_once_per_device(self):
+        self.login()
+        self.login()
+        self.login("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile Safari/17")
+
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.user,
+                category="security",
+                title="New sign-in to your Bill Buddy account",
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            EmailDelivery.objects.filter(
+                user=self.user,
+                subject="New sign-in to your Bill Buddy account",
+            ).count(),
+            2,
+        )
 
     def test_revoking_other_sessions_blocks_access_and_refresh(self):
         current = self.login()
@@ -542,6 +575,18 @@ class AccountLifecycleApiTests(APITestCase):
         self.assertTrue(user.is_active)
         self.assertIsNone(user.email_verified_at)
         self.assertTrue(EmailVerificationToken.objects.filter(user=user, used=False).exists())
+        notification = Notification.objects.get(
+            user=user,
+            dedupe_key=f"security:registration:{user.pk}",
+        )
+        self.assertEqual(notification.category, "security")
+        self.assertEqual(notification.title, "Your Bill Buddy account was created")
+        self.assertTrue(
+            EmailDelivery.objects.filter(
+                user=user,
+                dedupe_key=f"security:registration:{user.pk}",
+            ).exists()
+        )
 
     def test_email_verification_records_timestamp_without_changing_activation(self):
         user = self.create_user(is_active=True)

@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'groups',
     'expense',
     'settlement',
+    'notifications',
     
 ]
 
@@ -88,6 +89,12 @@ CELERY_TASK_ALWAYS_EAGER = config(
 )
 CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_TASK_IGNORE_RESULT = True
+CELERY_BEAT_SCHEDULE = {
+    'deliver-pending-bill-buddy-reminders': {
+        'task': 'notifications.tasks.deliver_pending_reminders',
+        'schedule': 60.0,
+    },
+}
 
 if REDIS_URL:
     CACHES = {

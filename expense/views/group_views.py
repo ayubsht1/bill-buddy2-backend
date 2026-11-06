@@ -20,6 +20,7 @@ from groups.models import Group, GroupMessage # Imported GroupMessage for logs!
 from bill_buddy.response import custom_response  # Clean custom response path!
 from ..serializers import ExpenseCreateSerializer
 from ..utils import calculate_expense_shares, group_net_balances, simplify_debts
+from notifications.services import notify_group_members
 
 # Real-time message broadcasting
 from channels.layers import get_channel_layer
@@ -97,6 +98,15 @@ class CreateExpenseView(APIView):
             ])
             system_msg = f"{request.user.username} added an expense: '{expense.description}' for ${expense.amount}."
             GroupMessage.objects.create(group=group, sender=None, message=system_msg)
+            notify_group_members(
+                group=group,
+                actor=request.user,
+                category='expenses',
+                title=f'New expense in {group.name}',
+                message=f'{request.user.username} added "{expense.description}" for {expense.amount}.',
+                dedupe_key=f'expense:{expense.public_id}:created',
+                url=f'/groups/{group.public_id}',
+            )
 
         self._broadcast_system_message(group.id, system_msg)
         expense.refresh_from_db()
@@ -256,6 +266,16 @@ class ExpenseDetailView(APIView):
                 ])
             update_msg = f"{request.user.username} updated the expense '{updated_expense.description}'."
             GroupMessage.objects.create(group=expense.group, sender=None, message=update_msg)
+            update_dedupe_key = f'expense:{expense.public_id}:updated:{timezone.now().isoformat()}'
+            notify_group_members(
+                group=expense.group,
+                actor=request.user,
+                category='expenses',
+                title=f'Expense updated in {expense.group.name}',
+                message=f'{request.user.username} updated "{updated_expense.description}".',
+                dedupe_key=update_dedupe_key,
+                url=f'/groups/{expense.group.public_id}',
+            )
 
         CreateExpenseView._broadcast_system_message(expense.group_id, update_msg)
         updated_expense.refresh_from_db()
@@ -296,6 +316,15 @@ class ExpenseDetailView(APIView):
                 )
             expense.delete()
             GroupMessage.objects.create(group=group, sender=None, message=delete_msg)
+            notify_group_members(
+                group=group,
+                actor=request.user,
+                category='expenses',
+                title=f'Expense deleted in {group.name}',
+                message=f'{request.user.username} deleted "{description}".',
+                dedupe_key=f'expense:{expense.public_id}:deleted',
+                url=f'/groups/{group.public_id}',
+            )
         CreateExpenseView._broadcast_system_message(group.id, delete_msg)
 
         return custom_response(
