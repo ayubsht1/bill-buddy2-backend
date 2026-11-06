@@ -2,8 +2,10 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import serializers, status
 import os
+import re
 from django.shortcuts import get_object_or_404
 from django.db import models, transaction
+from django.utils import timezone
 
 from bill_buddy.response import custom_response
 from .models import Group, GroupEvent, GroupMessage, GroupMembership
@@ -17,6 +19,7 @@ from .serializers import (
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from expense.utils import group_net_balances
+from notifications.services import emit_notification, notify_group_members
 
 from django.contrib.auth import get_user_model
 User = get_user_model()
@@ -156,7 +159,19 @@ class GroupDetailView(APIView):
                 errors=serializer.errors,
                 status_code=status.HTTP_400_BAD_REQUEST
             )
+        previous_name = group.name
+        previous_description = group.description
         serializer.save()
+        if (group.name, group.description) != (previous_name, previous_description):
+            notify_group_members(
+                group=group,
+                actor=request.user,
+                category='groups',
+                title=f'Group updated: {group.name}',
+                message=f'{request.user.username} updated group details.',
+                dedupe_key=f'group:{group.public_id}:updated:{timezone.now().isoformat()}',
+                url=f'/groups/{group.public_id}',
+            )
         return custom_response(
             success=True,
             message="Group updated successfully.",
@@ -263,6 +278,15 @@ class GroupEventListCreateView(APIView):
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         event = serializer.save(group=group, created_by=request.user)
+        notify_group_members(
+            group=group,
+            actor=request.user,
+            category='groups',
+            title=f'New event in {group.name}',
+            message=f'{request.user.username} planned "{event.title}".',
+            dedupe_key=f'event:{event.public_id}:created',
+            url=f'/groups/{group.public_id}/events',
+        )
         return custom_response(
             success=True,
             message="Group event created successfully.",
@@ -330,7 +354,18 @@ class GroupEventDetailView(APIView):
                 errors=serializer.errors,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
+        previous_event = (event.title, event.starts_at, event.ends_at, event.location, event.description)
         event = serializer.save()
+        if (event.title, event.starts_at, event.ends_at, event.location, event.description) != previous_event:
+            notify_group_members(
+                group=group,
+                actor=request.user,
+                category='groups',
+                title=f'Event updated in {group.name}',
+                message=f'{request.user.username} updated "{event.title}".',
+                dedupe_key=f'event:{event.public_id}:updated:{event.updated_at.isoformat()}',
+                url=f'/groups/{group.public_id}/events',
+            )
         return custom_response(
             success=True,
             message="Group event updated successfully.",
@@ -351,6 +386,17 @@ class GroupEventDetailView(APIView):
                 message="Only the event creator or a group admin can delete this event.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
+        title = event.title
+        event_id = event.public_id
+        notify_group_members(
+            group=group,
+            actor=request.user,
+            category='groups',
+            title=f'Event cancelled in {group.name}',
+            message=f'{request.user.username} cancelled "{title}".',
+            dedupe_key=f'event:{event_id}:deleted',
+            url=f'/groups/{group.public_id}/events',
+        )
         event.delete()
         return custom_response(success=True, message="Group event deleted successfully.")
 
@@ -389,6 +435,15 @@ class JoinGroupView(APIView):
                 )
             join_msg = f"{request.user.username} joined the group!"
             GroupMessage.objects.create(group=group, sender=None, message=join_msg)
+            notify_group_members(
+                group=group,
+                actor=request.user,
+                category='groups',
+                title=f'New member in {group.name}',
+                message=f'{request.user.username} joined the group.',
+                dedupe_key=f'group:{group.public_id}:member:{request.user.public_id}:joined',
+                url=f'/groups/{group.public_id}',
+            )
 
         # ⚡ REAL-TIME: Fixed to structure properly with consumer channel architectures
         channel_layer = get_channel_layer()
@@ -488,6 +543,21 @@ class GroupChatView(APIView):
             reply_to=reply_to_obj,
             is_forwarded=is_forwarded
         )
+        mention_pattern = re.compile(r'(?<!\w)@([A-Za-z0-9_.-]+)')
+        mentioned = {
+            username.casefold()
+            for username in mention_pattern.findall(message_text)
+        }
+        for member in group.members.exclude(pk=request.user.pk):
+            is_mentioned = member.username.casefold() in mentioned
+            emit_notification(
+                user=member,
+                category='chat',
+                title=f'You were mentioned in {group.name}' if is_mentioned else f'New message in {group.name}',
+                message=f'{request.user.username}: {message_text[:240] or "sent an attachment"}',
+                dedupe_key=f'group-message:{chat_msg.pk}:{member.pk}',
+                url=f'/groups/{group.public_id}',
+            )
         
         # Real-time WebSocket broadcast trigger configuration
         serialized_message = GroupMessageSerializer(chat_msg, context={'request': request}).data
@@ -594,6 +664,25 @@ class AddGroupMemberView(APIView):
                 )
             add_msg = f"{request.user.username} added {target_user.username} to the group."
             GroupMessage.objects.create(group=group, sender=None, message=add_msg)
+            emit_notification(
+                user=target_user,
+                category='groups',
+                title=f'Added to {group.name}',
+                message=f'{request.user.username} added you to the group.',
+                dedupe_key=f'group:{group.public_id}:member:{target_user.public_id}:invited',
+                url=f'/groups/{group.public_id}',
+                email=True,
+                email_subject=f'You were added to {group.name} on Bill Buddy',
+            )
+            for existing_member in group.members.exclude(pk__in=[request.user.pk, target_user.pk]):
+                emit_notification(
+                    user=existing_member,
+                    category='groups',
+                    title=f'New member in {group.name}',
+                    message=f'{target_user.username} was added to the group.',
+                    dedupe_key=f'group:{group.public_id}:member:{target_user.public_id}:added:{existing_member.pk}',
+                    url=f'/groups/{group.public_id}',
+                )
 
         # ⚡ Real-Time: Announce via WebSockets room channel
         channel_layer = get_channel_layer()
@@ -672,6 +761,15 @@ class RemoveGroupMemberView(APIView):
                 broadcast_message = f"{user_to_remove.username} has left the group."
                 success_message = "You have successfully left the group."
             GroupMessage.objects.create(group=group, sender=None, message=broadcast_message)
+            if not is_self_removing:
+                emit_notification(
+                    user=user_to_remove,
+                    category='groups',
+                    title=f'Removed from {group.name}',
+                    message=f'{request.user.username} removed you from the group.',
+                    dedupe_key=f'group:{group.public_id}:member:{user_to_remove.public_id}:removed:{timezone.now().isoformat()}',
+                    url='/groups',
+                )
 
         # ⚡ Real-Time: Broadcast the action via WebSockets room channel
         channel_layer = get_channel_layer()
@@ -746,6 +844,14 @@ class UpdateMemberRoleView(APIView):
         old_role = membership.role
         membership.role = new_role
         membership.save()
+        emit_notification(
+            user=target_user,
+            category='groups',
+            title=f'Your role changed in {group.name}',
+            message=f'{request.user.username} changed your role from {old_role} to {new_role}.',
+            dedupe_key=f'group:{group.public_id}:role:{target_user.public_id}:{timezone.now().isoformat()}',
+            url=f'/groups/{group.public_id}',
+        )
 
         # Log the change
         role_msg = f"🔄 {request.user.username} changed {target_user.username}'s role from {old_role} to {new_role}."
